@@ -117,7 +117,7 @@ bool mod_romfs_override(const char *path, char *out, size_t cap) {
 // bin/message/<folder> -> language code
 static const struct { const char *folder, *code; } k_msg_langs[] = {
     {"English", "en-US"}, {"Spanish", "es"},  {"French", "fr"},          {"German", "de"},         {"Italian", "it"},
-    {"JPN", "ja"},        {"Korean", "ko"},   {"Simp_Chinese", "zh-CN"}, {"Trad_Chinese", "zh-TW"},
+    {"JPN", "ja"},        {"Korean", "ko"},   {"Simp_Chinese", "zh-Hans"}, {"Trad_Chinese", "zh-Hant"},
 };
 
 const char *mod_language(const char *name) {
