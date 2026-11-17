@@ -33,12 +33,13 @@ How to start
    the game code and compiles it for your PC. This takes a while, once: about 7 minutes on a 16-thread PC. Fewer
    cores take longer. A file that takes over a minute is named under the progress bar. You can Cancel and build again
    later: the pieces already compiled are kept, so it carries on from there.
-5. Click "Play". Next time the launcher shows Play straight away.
+   Then it prepares the shaders: every shader of your game files is built once for your graphics card ("Preparing
+   shaders", about 7 minutes on an 8-core laptop), so the game builds almost none while you play.
+5. Click "Play". Next time the launcher shows Play straight away. After a graphics driver update, or when you switch a
+   mod on or off, Play prepares the shaders again first.
 
-The first time you reach an area, the picture may stop for a moment while the game builds that area's shaders. Wait
-for it: the game goes on by itself. On a slow PC this can take 15 to 25 seconds. The shaders are kept in the cache
-folder, so later visits pause about a second. Inside an area, something you see for
-the first time (a new effect or enemy) may appear a frame late instead of stopping the game.
+The first frame of an area you enter for the first time can still take a moment (a tenth of a second on the test
+laptop), and so can a few shaders the preparation can't foresee. These are kept in the cache folder, so it happens once.
 
 At the online prompt, choose "Do Not Use": online features do not work.
 

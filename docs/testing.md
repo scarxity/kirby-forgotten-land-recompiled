@@ -52,16 +52,22 @@ The stage tour passes with any amount of stutter, so a change that touches shade
 compared on a cold cache, the way a player's first run sees it:
 
 ```sh
-rm -rf <work>/cache    # the pipeline cache
-LARECOMP_VK_COLD=1 TOUR_ONLY='^(Level1/Stage2|CstageFire/Stage01|Level2/Stage1)/' WORK=<work> \
+rm -rf <work>/cache    # the shader caches
+KEY=$((RANDOM * 32768 + RANDOM + 2))
+# the launcher's prepare step: the game started hidden, every shader of the game files prepared, then it exits
+LARECOMP_VK_COLD=$KEY LARECOMP_HIDDEN=1 LARECOMP_NO_USER_INPUT=1 LARECOMP_SHADER_PREP=1 LARECOMP_SHADER_PREBUILD=1 \
+    LARECOMP_SHADER_PREP_EXIT=1 <work>/build/ForgottenLandRecomp.exe extracted --play
+LARECOMP_VK_COLD=$KEY TOUR_ONLY='^(Level1/Stage2|CstageFire/Stage01|Level2/Stage1)/' WORK=<work> \
     bash tools/verify/stage_tour.sh <game folder> <out>
 python tools/verify/hold_stats.py <out>
 ```
 
-`LARECOMP_VK_COLD=1` makes every pipeline new to the driver's own cache too. Run each side at least three times,
-alternating. `hold_stats.py` prints the frames held outside area entry (what a player feels as stutter), those of 50 ms
-or more, the area-entry bursts (a new area's shaders), and the frames shown with a few draws late.
-0.3.2 measured on an RTX 3050 Laptop: holds of 50 ms or more 35-37 -> 12 a run, about 60 frames shown with draws late.
+`LARECOMP_VK_COLD=<n>` makes every pipeline new to the driver, as on a player's first run; the prepare process and the
+play process must have the same number. Test the two processes, as the launcher runs them: a single process, or a
+prepare step that is killed, hides misses. `hold_stats.py` prints the frames held (what a player feels as stutter),
+those of 50 ms or more and the area-entry bursts. Each `[vk] frame held` log line says what the wait was for (shaders
+translated, compiled, pipelines built).
+0.3.2 measured on an RTX 3050 Laptop, first stage: holds of 50 ms or more 52 -> 9, the longest 1.4 s -> 0.13 s.
 
 ## What no check proves
 

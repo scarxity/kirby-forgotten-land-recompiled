@@ -16,8 +16,8 @@ an emulator.
 
 Version 0.3.0 is rebuilt on [LAS Recomp](https://github.com/peiikai/LASRecomp)'s engine. The game boots, plays its
 opening and runs the first stage with scripted input, and a stage tour starts a game at each of its 109 stages. Stage
-music plays. A new area waits on its last complete picture while its shaders build, instead of showing a black or
-half-drawn screen. [docs/STATUS.md](docs/STATUS.md) lists what has been checked and how, and the known problems.
+music plays. The launcher prepares every shader of the game files before the first play, as a PC game does, so play
+compiles almost none. [docs/STATUS.md](docs/STATUS.md) lists what has been checked and how, and the known problems.
 
 Supported dump: the base game, v1.0.0 (program id `01004D300C5AE000`, `main` build id `d9ba7db72ffafecd`). The
 launcher refuses other versions and the update when you pick the folder.
