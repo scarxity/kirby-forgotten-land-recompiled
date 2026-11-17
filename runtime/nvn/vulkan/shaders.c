@@ -130,18 +130,33 @@ static bool opt_stage(int stage) {
     return getenv("LARECOMP_VK_OPT") || (on && stage != STAGE_VERTEX);
 }
 
-uint32_t *vk_glsl_to_spirv(const char *src, int stage, const char *name, size_t *nwords) {
-    bool opt = opt_stage(stage);
-    uint64_t h = src_hash(src, stage) ^ (opt ? 0x9e3779b97f4a7c15ull : 0);
+static bool spirv_nocache(void) {
     static int nocache = -1;
     if (nocache < 0) nocache = getenv("LARECOMP_VK_NO_SPIRV_CACHE") != NULL;
+    return nocache;
+}
+
+uint64_t vk_spirv_key(const char *src, int stage) { return src_hash(src, stage) ^ (opt_stage(stage) ? 0x9e3779b97f4a7c15ull : 0); }
+
+uint32_t *vk_spirv_load(uint64_t key, size_t *nwords) { return spirv_nocache() ? NULL : cache_load(key, nwords); }
+
+bool vk_spirv_have(uint64_t key) {
+    char path[64];
+    snprintf(path, sizeof path, "cache/spirv/%016llx.spv", (unsigned long long)key);
+    struct stat st;
+    return !spirv_nocache() && stat(path, &st) == 0;
+}
+
+uint32_t *vk_glsl_to_spirv(const char *src, int stage, const char *name, size_t *nwords) {
+    uint64_t h = vk_spirv_key(src, stage);
+    bool nocache = spirv_nocache();
     uint32_t *out = nocache ? NULL : cache_load(h, nwords);
     if (out) return out;
     static __thread shaderc_compiler_t comp;
     if (!comp) comp = shaderc_compiler_initialize();
     shaderc_compile_options_t o = shaderc_compile_options_initialize();
     shaderc_compile_options_set_target_env(o, shaderc_target_env_vulkan, shaderc_env_version_vulkan_1_3);
-    shaderc_compile_options_set_optimization_level(o, opt ? shaderc_optimization_level_performance
+    shaderc_compile_options_set_optimization_level(o, opt_stage(stage) ? shaderc_optimization_level_performance
                                                                                   : shaderc_optimization_level_zero);
     shaderc_compilation_result_t r = shaderc_compile_into_spv(comp, src, strlen(src), kind_of(stage), name, "main", o);
     shaderc_compile_options_release(o);

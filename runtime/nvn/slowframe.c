@@ -18,6 +18,9 @@ void slow_note_build(const char *what, uint64_t ns) {
     else ADD(n_progs, 1), ADD(prog_ns, ns);
 }
 void slow_note_cache_hit(void) { ADD(n_hits, 1); }
+void slow_build_totals(uint64_t v[6]) {
+    v[0] = GET(n_tr), v[1] = GET(tr_ns), v[2] = GET(n_progs), v[3] = GET(prog_ns), v[4] = GET(n_pipes), v[5] = GET(pipe_ns);
+}
 void slow_note_upload(uint64_t bytes) { ADD(n_uploads, 1), ADD(upload_bytes, bytes); }
 void slow_note_full_hash(void) { ADD(n_hashes, 1); }
 ShaderInfo *slow_translate(const uint8_t *code, size_t max_size, int stage, const ShaderKey *key) {
