@@ -783,7 +783,8 @@ static void prep_step_progress(int done, int total) {
     int permille = total ? (int)((int64_t)done * 1000 / total) : 0;
     if (permille == last) return;
     last = permille;
-    printf("phase shaders %.3f %d/%d\n", permille / 1000.0, done, total);
+    if (total) printf("phase shaders %.3f %d/%d\n", permille / 1000.0, done, total);
+    else printf("phase shaders 0.000 (reading the game files)\n");  // (the index: minutes on a first run)
     fflush(stdout);
 }
 
@@ -793,6 +794,7 @@ void shader_prep_boot(const char *romfs) {
     // LARECOMP_SHADER_PREP_EXIT=1: the launcher's "Preparing shaders" step. Progress lines on stdout ("phase shaders
     // <fraction>", as runtime/setup_cli.c prints its phases), then "done" and a normal exit
     bool step = getenv("LARECOMP_SHADER_PREP_EXIT") != NULL;
+    if (step) prep_step_progress(0, 0);
     shader_prep_run(romfs, step ? prep_step_progress : NULL, NULL);
     if (step) {
         printf("done\n");
