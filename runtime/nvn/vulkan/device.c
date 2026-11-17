@@ -2310,6 +2310,9 @@ void ui_window_init(void) {
     create_swapchain();
     vk_exec_init();
     vk_shaders_init();
+    extern void vk_spirv_preload(void), vk_translations_preload(void);
+    vk_spirv_preload();  // (the shader caches' indexes, read before the first frame)
+    vk_translations_preload();
 }
 
 SDL_Window *ui_window(void) { return window; }

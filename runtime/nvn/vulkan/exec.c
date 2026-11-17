@@ -2237,6 +2237,12 @@ static void tr_open(void) {
     LOG("[shader] translations on disk: %zu\n", tr_n);
 }
 
+void vk_translations_preload(void) {
+    pthread_mutex_lock(&translate_lock);
+    if (!tr_state) tr_open();
+    pthread_mutex_unlock(&translate_lock);
+}
+
 // Everything maxwell_translate reads: the shader, its constants, the key, the backend's settings
 static uint64_t tr_in_hash(const uint8_t *code, size_t max, int stage, const ShaderKey *k) {
     uint64_t h = hash_words(0x7472ull + (uint64_t)stage, code, max);

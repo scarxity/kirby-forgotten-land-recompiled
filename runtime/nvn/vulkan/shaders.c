@@ -7,6 +7,9 @@
 #include <stdio.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#ifdef LARECOMP_ZSTD
+#include <zstd.h>
+#endif
 
 #include "shaders.h"
 
@@ -39,8 +42,10 @@ static uint64_t src_hash(const char *src, int stage) {
 #define spv_tell ftello
 #endif
 #define SPV_FILE "cache/spirv.bin"
-#define SPV_MAGIC 0x31565053u  // "SPV1"
-typedef struct { uint64_t key; int64_t off; uint32_t n; } SpvAt;  // (off: of the words)
+#define SPV_MAGIC 0x32565053u  // "SPV2"
+// A record: {key, words | stored bytes << 32 (0: the words as they are; else that many bytes of zstd)}, then the data.
+// (zstd: ~100 KB of SPIR-V a shader, and a scene's first frame read ~80 MB of it from disk)
+typedef struct { uint64_t key; int64_t off; uint32_t n, z; } SpvAt;  // (off: of the data)
 static pthread_mutex_t spv_lk = PTHREAD_MUTEX_INITIALIZER;
 static FILE *spv_f;
 static int64_t spv_end;  // where the next record goes
@@ -48,20 +53,20 @@ static bool spv_opened;
 static SpvAt *spv_at;
 static size_t spv_cap, spv_n;
 
-static void spv_put(uint64_t key, int64_t off, uint32_t n) {
+static void spv_put(uint64_t key, int64_t off, uint32_t n, uint32_t z) {
     if (spv_n * 2 >= spv_cap) {
         SpvAt *was = spv_at;
         size_t old = spv_cap;
         spv_cap = spv_cap ? spv_cap * 2 : 8192;
         spv_at = calloc(spv_cap, sizeof *spv_at);
         spv_n = 0;
-        for (size_t i = 0; i < old; i++) if (was[i].key) spv_put(was[i].key, was[i].off, was[i].n);
+        for (size_t i = 0; i < old; i++) if (was[i].key) spv_put(was[i].key, was[i].off, was[i].n, was[i].z);
         free(was);
     }
     size_t i = key & (spv_cap - 1);
     while (spv_at[i].key && spv_at[i].key != key) i = (i + 1) & (spv_cap - 1);
     if (!spv_at[i].key) spv_n++;
-    spv_at[i] = (SpvAt){key, off, n};
+    spv_at[i] = (SpvAt){key, off, n, z};
 }
 
 static const SpvAt *spv_find(uint64_t key) {
@@ -99,10 +104,11 @@ static void spv_open(void) {  // (spv_lk)
             uint64_t rec[2];
             spv_seek(spv_f, at, SEEK_SET);
             if (fread(rec, sizeof rec, 1, spv_f) != 1) break;
-            uint32_t n = (uint32_t)rec[1];
-            if (!rec[0] || !n || at + 16 + (int64_t)n * 4 > size) break;  // (a record cut short: written over)
-            spv_put(rec[0], at + 16, n);
-            at += 16 + (int64_t)n * 4;
+            uint32_t n = (uint32_t)rec[1], z = (uint32_t)(rec[1] >> 32);
+            int64_t len = z ? z : (int64_t)n * 4;
+            if (!rec[0] || !n || at + 16 + len > size) break;  // (a record cut short: written over)
+            spv_put(rec[0], at + 16, n, z);
+            at += 16 + len;
             spv_end = at;
         }
     } else {
@@ -124,8 +130,17 @@ static uint32_t *cache_load(uint64_t h, size_t *nwords) {
     // lock around the reads queued them all)
     static __thread FILE *rf;
     if (!at.key || (!rf && !(rf = fopen(SPV_FILE, "rb")))) return NULL;
+    size_t len = at.z ? at.z : (size_t)at.n * 4;
     uint32_t *d = malloc((size_t)at.n * 4);
-    if (spv_seek(rf, at.off, SEEK_SET) || fread(d, 4, at.n, rf) != at.n || d[0] != 0x07230203) free(d), d = NULL;
+    void *raw = at.z ? malloc(len) : d;
+    bool ok = !spv_seek(rf, at.off, SEEK_SET) && fread(raw, 1, len, rf) == len;
+#ifdef LARECOMP_ZSTD
+    if (ok && at.z) ok = ZSTD_decompress(d, (size_t)at.n * 4, raw, len) == (size_t)at.n * 4;
+#else
+    if (at.z) ok = false;
+#endif
+    if (raw != d) free(raw);
+    if (!ok || d[0] != 0x07230203) free(d), d = NULL;
     if (d) *nwords = at.n;
     return d;
 }
@@ -134,11 +149,29 @@ static void cache_store(uint64_t h, const uint32_t *spv, size_t nwords) {
     pthread_mutex_lock(&spv_lk);
     if (!spv_opened) spv_open();
     if (spv_f && h && !spv_find(h)) {
-        uint64_t rec[2] = {h, nwords};
-        bool ok = !spv_seek(spv_f, spv_end, SEEK_SET) && fwrite(rec, sizeof rec, 1, spv_f) == 1 && fwrite(spv, 4, nwords, spv_f) == nwords &&
+        const void *data = spv;
+        size_t len = nwords * 4, z = 0;
+        void *packed = NULL;
+#ifdef LARECOMP_ZSTD
+        packed = malloc(ZSTD_compressBound(len));
+        z = ZSTD_compress(packed, ZSTD_compressBound(len), spv, len, 3);
+        if (ZSTD_isError(z) || z >= len) z = 0;
+        else data = packed, len = z;
+#endif
+        uint64_t rec[2] = {h, nwords | (uint64_t)z << 32};
+        bool ok = !spv_seek(spv_f, spv_end, SEEK_SET) && fwrite(rec, sizeof rec, 1, spv_f) == 1 && fwrite(data, 1, len, spv_f) == len &&
                   !fflush(spv_f);
-        if (ok) spv_put(h, spv_end + 16, (uint32_t)nwords), spv_end += 16 + (int64_t)nwords * 4;
+        if (ok) spv_put(h, spv_end + 16, (uint32_t)nwords, (uint32_t)z), spv_end += 16 + (int64_t)len;
+        free(packed);
     }
+    pthread_mutex_unlock(&spv_lk);
+}
+
+// At startup, before the first frame: the index read then (the first build of the title screen held a frame ~200 ms)
+void vk_spirv_preload(void) {
+    if (getenv("LARECOMP_VK_NO_SPIRV_CACHE")) return;
+    pthread_mutex_lock(&spv_lk);
+    if (!spv_opened) spv_open();
     pthread_mutex_unlock(&spv_lk);
 }
 

@@ -690,7 +690,8 @@ static bool prep_run_locked(const char *romfs, void (*progress)(int done, int to
         r.flags = (nvn_window_origin() == 0 ? SR_FLIP_Y : 0) | (nvn_depth_mode() == 0 ? SR_DEPTH_MINUS_ONE : 0) | SR_WARM;
         gen = malloc(idx_npairs * 1024);
         size_t at = 0;
-        int ngen = 0, nint = 0;
+        int ngen = 0, nint = 0, nvs = 0, nvs2 = 0;
+        uint64_t last_vs = 0;
         FILE **gfiles = calloc((size_t)idx_nfiles + 1, sizeof *gfiles);
         for (size_t i = 0; i < idx_npairs; i++) {
             if (i && !pair_cmp(&idx_pairs[i], &idx_pairs[i - 1])) continue;
@@ -704,6 +705,16 @@ static bool prep_run_locked(const char *romfs, void (*progress)(int done, int to
             uint32_t omap = 0;
             if (d && b.size >= 0x80) memcpy(&omap, d + 0x30 + 0x48, 4);
             free(d);
+            {  // (measurement: vertex shaders reading generic attribute 2, SPH +0x18, 4 bits each)
+                if (v.vs != last_vs) {
+                    last_vs = v.vs;
+                    ShaderBlob vb;
+                    uint8_t *vd = blob_read(idx_find(v.vs), &vb, gfiles);
+                    nvs++;
+                    if (vd && vb.size >= 0x80 && (vd[0x30 + 0x18 + 1] & 0xF)) nvs2++;
+                    free(vd);
+                }
+            }
             int last = -1, written = 0;
             for (int rt = 0; rt < 8; rt++) if ((omap >> (rt * 4)) & 0xF) last = rt, written++;
             for (int k = 0; k < (written >= 2 ? 2 : 1); k++) {
@@ -735,7 +746,7 @@ static bool prep_run_locked(const char *romfs, void (*progress)(int done, int to
             cat += strlen(cs_gen + cat) + 1;
             ncs++;
         }
-        LOG("[shader] every program of the game files: %d, %d of them also with an integer last target; %d compute\n", ngen, nint, ncs);
+        LOG("[shader] every program of the game files: %d, %d of them also with an integer last target; %d compute; %d vertex shaders, %d reading attribute 2\n", ngen, nint, ncs, nvs, nvs2);
     }
     // done - pending moves both ways a little (builds finish on other threads): the count shown only goes up, and
     // never past the total
