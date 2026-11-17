@@ -36,8 +36,6 @@ void menu_set_scene(id<MTLTexture> tex, const float uv[4]);
 // Render thread, inside the window image's rendering (Vulkan command buffer cmd).
 void menu_render(void *cmd, uint32_t target_w, uint32_t target_h);
 #endif
-// Render thread: the next menu_render shows "preparing graphics" with done of total shader builds (total 0: not shown).
-void menu_notice(int done, int total);
 
 #ifdef __cplusplus
 }

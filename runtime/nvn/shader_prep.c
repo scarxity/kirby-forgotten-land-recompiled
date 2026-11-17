@@ -9,6 +9,9 @@
 #include <sys/stat.h>
 #include <time.h>
 
+#ifdef LARECOMP_ZSTD
+#include <zstd.h>
+#endif
 #include "nvn.h"
 #include "shader_prep.h"
 
@@ -284,6 +287,9 @@ typedef struct { char *path; uint8_t *mem; } IdxSrc;  // a game file, or (the ma
 static IdxSrc *idx_files;
 static int idx_nfiles;
 
+static uint64_t *idx_new;  // (idx_cmp: the hashes added from the file being scanned)
+static size_t idx_nnew, idx_new_cap;
+static bool idx_tracking;
 static void idx_add(uint64_t h, uint32_t file, uint32_t off, uint32_t size, uint32_t coff, uint32_t csize) {
     if (!h) return;
     if (idx_n * 2 >= idx_cap) {
@@ -305,6 +311,23 @@ static void idx_add(uint64_t h, uint32_t file, uint32_t off, uint32_t size, uint
     }
     idx_tab[j] = (IdxEnt){h, file, off, size, coff, csize};
     idx_n++;
+    if (idx_tracking) {
+        if (idx_nnew == idx_new_cap) idx_new = realloc(idx_new, (idx_new_cap = idx_new_cap ? idx_new_cap * 2 : 1024) * sizeof *idx_new);
+        idx_new[idx_nnew++] = h;
+    }
+}
+
+// Every vertex + fragment program of the game files (no geometry or tessellation stage), by its stages' code hashes
+typedef struct { uint64_t vs, fs; } IdxPair;
+static IdxPair *idx_pairs;
+static size_t idx_npairs, idx_pairs_cap;
+static void pair_add(uint64_t vs, uint64_t fs) {
+    if (idx_npairs == idx_pairs_cap) idx_pairs = realloc(idx_pairs, (idx_pairs_cap = idx_pairs_cap ? idx_pairs_cap * 2 : 4096) * sizeof *idx_pairs);
+    idx_pairs[idx_npairs++] = (IdxPair){vs, fs};
+}
+static int pair_cmp(const void *a, const void *b) {
+    const IdxPair *x = a, *y = b;
+    return x->vs != y->vs ? (x->vs < y->vs ? -1 : 1) : x->fs != y->fs ? (x->fs < y->fs ? -1 : 1) : 0;
 }
 
 static const IdxEnt *idx_find(uint64_t h) {
@@ -359,6 +382,7 @@ static void idx_bnsh(const uint8_t *d, size_t n, size_t b, uint32_t file) {
     for (uint32_t v = 0; v < nvar; v++) {
         uint64_t pbin = rd64(d, b + pvar + (uint64_t)v * 0x40 + 0x10);  // variation: binary program
         if (!pbin || pbin + 0x38 > fsz) continue;
+        uint64_t hs[6] = {0};
         for (int s = 0; s < 6; s++) {                                     // program: stage codes +8 (VS..CS)
             uint64_t pc = rd64(d, b + pbin + 8 + 8 * (uint64_t)s);
             if (!pc || pc + 0x20 > fsz) continue;
@@ -368,9 +392,10 @@ static void idx_bnsh(const uint8_t *d, size_t n, size_t b, uint32_t file) {
             uint32_t coff = rd32(d, b + pctl + 0x700), cs = rd32(d, b + pctl + 0x6FC);
             if (!coff || coff > csz || cs > csz - coff) continue;
             uint32_t len = coff + cs;
-            if (!off_add(b + pcode)) continue;  // (variations share code: hash each once)
-            idx_add(shader_code_hash(d + b + pcode, len), file, (uint32_t)(b + pcode), len, coff, cs);
+            hs[s] = shader_code_hash(d + b + pcode, len);
+            if (off_add(b + pcode)) idx_add(hs[s], file, (uint32_t)(b + pcode), len, coff, cs);  // (variations share code)
         }
+        if (hs[0] && hs[4] && !hs[1] && !hs[2] && !hs[3]) pair_add(hs[0], hs[4]);  // (slots: VS, HS, DS, GS, PS, CS)
     }
 }
 
@@ -395,6 +420,44 @@ static void idx_file(const char *path) {
     free(d);
     fclose(f);
 }
+
+#ifdef LARECOMP_ZSTD
+// A compressed game file (*.cmp: its size in 4 bytes, then a zstd frame), as the game reads it: models and effects
+// carry their own shaders. Only the shaders' code is kept, packed (the file's other contents are freed).
+static void idx_cmp(const char *path) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return;
+    fseek(f, 0, SEEK_END);
+    long n = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    uint8_t *d = n > 4 && n < 0x7FFFFFFF ? malloc((size_t)n) : NULL;
+    uint8_t *u = NULL;
+    size_t want = d && fread(d, 1, (size_t)n, f) == (size_t)n ? rd32(d, 0) : 0;
+    fclose(f);
+    if (want && want < (1u << 30) && (u = malloc(want)) && ZSTD_decompress(u, want, d + 4, (size_t)n - 4) == want) {
+        uint32_t file = (uint32_t)idx_nfiles;
+        off_reset();
+        idx_nnew = 0, idx_tracking = true;
+        for (size_t i = 0; i + 8 <= want; i += 8)
+            if (!memcmp(u + i, "BNSH\0\0\0\0", 8)) idx_bnsh(u, want, i, file);
+        idx_tracking = false;
+        if (idx_nnew) {
+            size_t total = 0, at = 0;
+            for (size_t k = 0; k < idx_nnew; k++) total += idx_find(idx_new[k])->size;
+            uint8_t *pack = malloc(total);
+            for (size_t k = 0; k < idx_nnew; k++) {
+                IdxEnt *e = (IdxEnt *)idx_find(idx_new[k]);
+                memcpy(pack + at, u + e->off, e->size);
+                e->off = (uint32_t)at, at += e->size;
+            }
+            idx_files = realloc(idx_files, sizeof *idx_files * (size_t)(idx_nfiles + 1));
+            idx_files[idx_nfiles++] = (IdxSrc){NULL, pack};
+        }
+    }
+    free(u);
+    free(d);
+}
+#endif
 
 // The main module (exefs/main, an NSO) holds a few shaders of its own in its data (LZ4-compressed in the file): its
 // read-only and read-write data segments are kept decompressed for the run when they have any
@@ -429,6 +492,7 @@ static void idx_nso(const char *path) {
     fclose(f);
 }
 
+static bool idx_cmp_too;  // (every program of the game files: the compressed ones too)
 static void idx_dir(const char *dir, int depth) {
     DIR *dd = depth < 8 ? opendir(dir) : NULL;
     if (!dd) return;
@@ -439,6 +503,9 @@ static void idx_dir(const char *dir, int depth) {
         snprintf(p, sizeof p, "%s/%s", dir, e->d_name);
         size_t l = strlen(e->d_name);
         const char *ext = l > 5 ? e->d_name + l - 5 : "";
+#ifdef LARECOMP_ZSTD
+        if (idx_cmp_too && l > 4 && !strcmp(e->d_name + l - 4, ".cmp")) { idx_cmp(p); continue; }
+#endif
         if (!strcmp(ext, "bfsha") || !strcmp(ext, ".ptcl") || (l > 4 && !strcmp(e->d_name + l - 4, ".arc"))) idx_file(p);
         else {
             struct stat sb;
@@ -547,9 +614,11 @@ static bool prep_run_locked(const char *romfs, void (*progress)(int done, int to
     } else list = strdup(shipped_list);
     uint64_t seen_game;
     char *seen = shader_seen_read(&seen_game);  // (the player's own list: after the shipped one, or alone)
-    if ((!list || !*list) && (!seen || !*seen)) { free(list); free(seen); LOG("[shader] preparation: no variant list\n"); return false; }
+    bool all = getenv("LARECOMP_SHADER_PREBUILD") && atoi(getenv("LARECOMP_SHADER_PREBUILD"));
+    if (!all && (!list || !*list) && (!seen || !*seen)) { free(list); free(seen); LOG("[shader] preparation: no variant list\n"); return false; }
     if (!renderer_prepare_begin()) { free(list); free(seen); LOG("[shader] preparation: no GPU device yet\n"); return false; }
     if (progress) progress(0, 0);  // (the total once the game files are indexed)
+    idx_cmp_too = all;
     if (!idx_n) {
         idx_dir(romfs, 0);
         char main_nso[1100];  // (<game files>/exefs/main, next to romfs/)
@@ -597,6 +666,27 @@ static bool prep_run_locked(const char *romfs, void (*progress)(int done, int to
         work[nwork++] = line;
         if (!own) nshipped = nwork;
     }
+    char *gen = NULL;  // (every program of the game files: one record each, the draw state a plain float target's)
+    if (all && idx_npairs) {
+        qsort(idx_pairs, idx_npairs, sizeof *idx_pairs, pair_cmp);
+        extern uint32_t nvn_window_origin(void), nvn_depth_mode(void);
+        ShaderRec r = {.kind = 'G', .ncolor = 1, .samples = 1, .channel_mask = 0xF, .topo = 2, .poly_fill = 1};
+        r.color[0] = 0x38;
+        r.flags = (nvn_window_origin() == 0 ? SR_FLIP_Y : 0) | (nvn_depth_mode() == 0 ? SR_DEPTH_MINUS_ONE : 0) | SR_WARM;
+        gen = malloc(idx_npairs * 512);
+        size_t at = 0;
+        int ngen = 0;
+        for (size_t i = 0; i < idx_npairs; i++) {
+            if (i && !pair_cmp(&idx_pairs[i], &idx_pairs[i - 1])) continue;
+            r.vs = idx_pairs[i].vs, r.fs = idx_pairs[i].fs;
+            shader_rec_format(&r, gen + at, 512);
+            if (nwork == cap) work = realloc(work, (size_t)(cap = cap ? cap * 2 : 1024) * sizeof *work);
+            work[nwork++] = gen + at;
+            at += strlen(gen + at) + 1;
+            ngen++;
+        }
+        LOG("[shader] every program of the game files: %d\n", ngen);
+    }
     // done - pending moves both ways a little (builds finish on other threads): the count shown only goes up, and
     // never past the total
     int total = nwork, shown = 0;
@@ -627,6 +717,7 @@ static bool prep_run_locked(const char *romfs, void (*progress)(int done, int to
     PREP_REPORT(total);
 #undef PREP_REPORT
     free(work);
+    free(gen);
     for (int i = 0; i < idx_nfiles; i++) if (files[i]) fclose(files[i]);
     free(files);
     free(list);

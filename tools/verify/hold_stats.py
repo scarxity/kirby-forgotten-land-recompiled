@@ -1,8 +1,7 @@
 """hold_stats.py <tour out folder>...: the stutter of stage tour runs (tools/verify/stage_tour.sh), from their logs.
 
-Frames the engine held for shader builds (vk_build_hold), split into area-entry bursts (100 or more draws waiting, behind
-the "Preparing graphics" notice) and the rest (what a player feels as stutter), and the frames shown with a few draws
-late. Compare a change on a cold cache: LARECOMP_VK_COLD=1 and an empty <work>/cache, the same stages, several runs a
+Frames the engine held for shader builds (vk_build_hold), split into area-entry bursts (100 or more draws waiting: a new
+area's shaders) and the rest (what a player feels as stutter), and the frames shown with a few draws late. Compare a change on a cold cache: LARECOMP_VK_COLD=1 and an empty <work>/cache, the same stages, several runs a
 side, alternating. The engine logs the first 200 held frames of a run: keep runs short (the stage tour's are).
 Standard library only.
 """
@@ -13,7 +12,7 @@ import sys
 
 HELD = re.compile(r'\[vk\] frame held (\d+) ms for \d+ shader / pipeline builds \((\d+) draws waiting')
 SHOWN = re.compile(r'\[vk\] frame shown after \d+ ms with (\d+) draws missing')
-LATE = re.compile(r'\[vk\] t=.* in held frames, (\d+) late\)')
+LATE = re.compile(r'\[vk\] t=.* skipped \((?:\d+ in held frames, )?(\d+) late\)')
 
 
 def stats(folder):

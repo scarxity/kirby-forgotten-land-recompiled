@@ -23,7 +23,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
-enum { SR_FLIP_Y = 1, SR_DEPTH_MINUS_ONE = 2, SR_FLIP_X = 4 };
+// SR_WARM: a guessed draw state (every program of the game files): its pipeline is built for the caches and dropped
+enum { SR_FLIP_Y = 1, SR_DEPTH_MINUS_ONE = 2, SR_FLIP_X = 4, SR_WARM = 8 };
 
 typedef struct {
     char kind;               // 'G' graphics pipeline, 'C' compute program

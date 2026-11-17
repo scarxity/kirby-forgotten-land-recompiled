@@ -1871,32 +1871,8 @@ static void perf_overlay(float scale) {
     ImGui::PopStyleVar(3);
 }
 
-// The game waits for shader builds (runtime/nvn/vulkan/exec.c vk_build_hold): a box at the bottom says why, with
-// the builds done of the total (render thread only)
-static int g_notice_done, g_notice_total;
-void menu_notice(int done, int total) { g_notice_done = done, g_notice_total = total; }
-static void notice_box(float scale) {
-    ImGuiIO &io = ImGui::GetIO();
-    ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y - 48 * scale), 0, ImVec2(0.5f, 1));
-    ImGui::SetNextWindowBgAlpha(0.62f);
-    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1, 1, 1, 1));
-    ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(1, 1, 1, 0.15f));
-    ImGui::PushStyleColor(ImGuiCol_PlotHistogram, ImVec4(0.25f, 0.5f, 0.85f, 1));  // (the count in white stays readable on it)
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 10 * scale);
-    ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0);
-    ImGui::Begin("##notice", NULL, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoInputs |
-                                       ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoFocusOnAppearing);
-    ImGui::TextUnformatted(L("Preparing graphics for this area... (first visit only)"));
-    char n[64];
-    snprintf(n, sizeof n, L("%d of %d"), g_notice_done, g_notice_total);
-    ImGui::ProgressBar((float)g_notice_done / (float)g_notice_total, ImVec2(-FLT_MIN, 0), n);
-    ImGui::End();
-    ImGui::PopStyleVar(2);
-    ImGui::PopStyleColor(3);
-}
-
-// Whether menu_render draws anything: the menu, the keyboard, an overlay (FPS, the touch controls, the notice).
-static bool render_needed(bool open, bool kbd, bool touch) { return open || kbd || g_settings.show_fps || touch || g_notice_total; }
+// Whether menu_render draws anything: the menu, the keyboard, an overlay (FPS, the touch controls).
+static bool render_needed(bool open, bool kbd, bool touch) { return open || kbd || g_settings.show_fps || touch; }
 
 #ifdef __APPLE__
 void menu_render(id<MTLDevice> dev, id<MTLCommandBuffer> cb, id<MTLTexture> target) {
@@ -1951,8 +1927,8 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
             pthread_mutex_unlock(&q_lock);
             int rw = 0, rh = 0;  // (Dynamic: the render size shown with the frame rate)
             if (g_settings.show_fps && g_settings.dyn_res) output_scale_render_size(&rw, &rh);
-            if (!events) snprintf(key, sizeof key, "%.0fx%.0f fps %d %.0f %dx%d notice %d/%d", tw, th, (int)g_settings.show_fps,
-                                  g_settings.show_fps ? g_fps_shown : 0.0, rw, rh, g_notice_done, g_notice_total);
+            if (!events) snprintf(key, sizeof key, "%.0fx%.0f fps %d %.0f %dx%d", tw, th, (int)g_settings.show_fps,
+                                  g_settings.show_fps ? g_fps_shown : 0.0, rw, rh);
         }
         ImDrawData *dd = ImGui::GetDrawData();
         if (key[0] && g_ov_same >= 3 && !strcmp(key, g_ov_key) && dd && dd->Valid) {
@@ -2031,7 +2007,6 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
         if (g_settings.fps_advanced) perf_overlay(scale);
         else fps_box(scale);
     }
-    if (g_notice_total) notice_box(scale);
 
     if (touch) touch_draw(ImGui::GetBackgroundDrawList(), io.DisplaySize.x, io.DisplaySize.y, g_font_big ? g_font_big : ImGui::GetFont(),
                           g_menu_font_big ? g_menu_font_big : ImGui::GetFont());

@@ -1790,52 +1790,7 @@ static void ip_present_mid(TexBackend *b) {  // an in-between in b (the game's i
     }
     vk_ip_mid = false;
 }
-// ---- frames held for shader builds (exec.c vk_build_hold)
-// A copy of the last frame shown, taken when a run of held frames begins (their lists may draw into its texture), is
-// presented again with the overlay's notice while the builds go on.
 NvnTexture *g_vk_shown;  // the last game texture presented (textures.c forgets it when it is destroyed)
-static TexBackend hold_img;
-static void hold_begin(void) {
-    TexBackend *b = g_vk_shown ? vk_tex(g_vk_shown, true) : NULL;
-    if (hold_img.image && (!b || hold_img.width != b->width || hold_img.height != b->height || hold_img.format != b->format)) {
-        vk_views_forget(&hold_img);
-        vk_defer_image(hold_img.image, hold_img.mem);
-        hold_img.image = VK_NULL_HANDLE;
-    }
-    if (!b || !b->image || b->aspect != VK_IMAGE_ASPECT_COLOR_BIT || b->depth > 1 || b->layers > 1) return;
-    vk_end_pass();
-    VkCommandBuffer cb = vk_cmd();
-    if (!hold_img.image) {
-        VkImageCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .flags = VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT,
-                                .imageType = VK_IMAGE_TYPE_2D, .format = b->format, .extent = {b->width, b->height, 1},
-                                .mipLevels = 1, .arrayLayers = 1, .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
-                                .usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-                                .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
-        VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
-        if (vmaCreateImage(g_vk.vma, &ci, &ai, &hold_img.image, &hold_img.mem, NULL) != VK_SUCCESS) { hold_img.image = VK_NULL_HANDLE; return; }
-        hold_img.format = b->format, hold_img.base_type = VK_IMAGE_VIEW_TYPE_2D, hold_img.aspect = VK_IMAGE_ASPECT_COLOR_BIT;
-        hold_img.width = b->width, hold_img.height = b->height, hold_img.depth = hold_img.layers = hold_img.levels = hold_img.samples = 1;
-        vk_image_init_layout(cb, hold_img.image, VK_IMAGE_ASPECT_COLOR_BIT);
-    }
-    hold_img.scalable = b->scalable, hold_img.sx = b->sx, hold_img.sy = b->sy, hold_img.ax = b->ax, hold_img.ay = b->ay;
-    vk_full_barrier(cb);
-    VkImageCopy r = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
-                     .extent = {b->width, b->height, 1}};
-    rec_CmdCopyImage(cb, b->image, VK_IMAGE_LAYOUT_GENERAL, hold_img.image, VK_IMAGE_LAYOUT_GENERAL, 1, &r);
-    vk_full_barrier(cb);
-}
-static void hold_notice(int done, int total) {
-    static const float black[4] = {0, 0, 0, 1};
-    if (!hold_img.image || !ip_place.ok) return;
-    menu_notice(done, total);
-    if (vk_frame_begin(black)) {
-        VkCommandBuffer cb = vk_cmd();
-        vk_present_draw(cb, &hold_img, ip_place.vx, ip_place.vy, ip_place.vw, ip_place.vh, ip_place.pv);
-        menu_render((void *)cb, g_vk.sc_extent.width, g_vk.sc_extent.height);
-        vk_frame_end(NULL);
-    }
-    menu_notice(0, 0);
-}
 
 static int ip_mids(TexBackend *b, uint64_t frame) {  // (the in-betweens shown)
     static uint64_t prev_ns;
@@ -1945,9 +1900,9 @@ void backend_present_now(NvnTexture *t, uint64_t frame) {
     // interpolation only waited for
     static bool held;
     if (!(rq_on() ? rq_present_is_repeat() : direct_repeat)) {
-        extern bool vk_build_hold(void (*begin)(void), void (*notice)(int done, int total));
+        extern bool vk_build_hold(void);
         bool inter = interp_wanted() == INTERP_ON, h;
-        WAITING(h = vk_build_hold(hold_begin, inter ? NULL : hold_notice));
+        WAITING(h = vk_build_hold());
         held = h && !inter;
         if (!held) g_vk_shown = t;
     }

@@ -2,19 +2,25 @@
 
 Versions are tagged `vX.Y.Z`. Small fixes bump the last number; features and large fixes bump the middle one.
 
-## 0.3.1
+## 0.3.2
+
+0.3.1 was published for a few hours and withdrawn: it showed "Preparing graphics for this area... (first visit only)"
+in the middle of play, over and over. Its changes are in this version.
 
 **Less stutter the first time you play an area** ([#14](https://github.com/scarxity/kirby-forgotten-land-recompiled/issues/14)).
 In 0.3.0 every new shader froze the picture until the graphics driver had built it, 20 to 140 ms each, on any PC: a
 fast GPU stuttered as much as a slow one. Now a frame that waits only for a few new shaders (a new effect or enemy)
-waits at most 33 ms and is shown without them; they appear a frame later. Entering a new area still waits behind the
-"Preparing graphics" notice. Measured on an RTX 3050 Laptop with an empty shader cache, over three stages: pauses of
-50 ms or more outside area entry went from 35-37 to 12 a run; about 60 frames a run show a few objects one frame late.
+waits at most 33 ms and is shown without them; they appear a frame later. Entering a new area still waits for its
+shaders, on the last complete picture. Measured on an RTX 3050 Laptop with an empty shader cache, over three stages:
+pauses of 50 ms or more outside area entry went from 35-37 to 12 a run; about 60 frames a run show a few objects one
+frame late.
 Later visits use the shader cache, as before.
 
 Unzip over 0.3.0: the game code from 0.3.0 is used as it is, nothing to rebuild.
 
 ### Changed
+- No "Preparing graphics for this area... (first visit only)" box over the game any more: a wait for shaders keeps the
+  last complete picture on screen, with nothing drawn over it
 - `LARECOMP_HOLD_SMALL_MS` sets how long such a frame waits (default 33)
 
 ### Added

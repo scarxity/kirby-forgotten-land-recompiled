@@ -60,8 +60,8 @@ python tools/verify/hold_stats.py <out>
 
 `LARECOMP_VK_COLD=1` makes every pipeline new to the driver's own cache too. Run each side at least three times,
 alternating. `hold_stats.py` prints the frames held outside area entry (what a player feels as stutter), those of 50 ms
-or more, the area-entry bursts behind the "Preparing graphics" notice, and the frames shown with a few draws late.
-0.3.1 measured on an RTX 3050 Laptop: holds of 50 ms or more 35-37 -> 12 a run, about 60 frames shown with draws late.
+or more, the area-entry bursts (a new area's shaders), and the frames shown with a few draws late.
+0.3.2 measured on an RTX 3050 Laptop: holds of 50 ms or more 35-37 -> 12 a run, about 60 frames shown with draws late.
 
 ## What no check proves
 

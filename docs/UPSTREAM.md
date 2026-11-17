@@ -64,8 +64,8 @@ carries one of this repo's fixes; the engine stays as LAS has it otherwise.
 - `runtime/nvn/vulkan/exec.c`, `device.c`, `shaders.c`, `textures.c`: no weather, snow, mirror mode, recolouring,
   texture patches, screen filter, phone HUD corners, pause backdrop or room widening; the present crop is the whole
   image and the wide view is off. `device.c`: the window title from `game.h`.
-- `runtime/nvn/vulkan/exec.c`, `device.c`, `shaders.c`, `textures.c`, `record.c`, `vk.h`: the frame hold and its
-  "Preparing graphics" notice (with `ui/menu.mm`, `ui/menu.h` and the `ui/lang/*.inc` strings), geometry-stage
+- `runtime/nvn/vulkan/exec.c`, `device.c`, `shaders.c`, `textures.c`, `record.c`, `vk.h`: the frame hold (with no
+  notice over it: LAS's own ui/menu.mm notice box and its strings removed), geometry-stage
   pipelines, storage images for SUST, only the device features the GPU reports, integer textures without filtering,
   a feedback snapshot reused only for its own format and size, the pipeline cache saved after a burst of builds, the
   log's GPU ids and features, validation message counts, and a lost GPU's faulting address named.

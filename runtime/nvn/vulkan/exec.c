@@ -929,7 +929,7 @@ typedef struct Job { void (*fn)(void *); void *arg; struct Job *next; } Job;
 static Job *jobs_head, *jobs_tail;
 static pthread_mutex_t jobs_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t jobs_cond = PTHREAD_COND_INITIALIZER;
-static _Atomic int jobs_pending, jobs_done;  // translations and builds queued or running; finished ever (vk_build_hold)
+static _Atomic int jobs_pending;  // translations and builds queued or running
 int vk_builds_pending(void) { return atomic_load(&jobs_pending); }  // (device.c: the pipeline cache saved after a burst)
 
 static void *worker(void *a) {
@@ -944,7 +944,6 @@ static void *worker(void *a) {
         pthread_mutex_unlock(&jobs_lock);
         j->fn(j->arg);
         free(j);
-        atomic_fetch_add(&jobs_done, 1);
         atomic_fetch_sub(&jobs_pending, 1);
     }
     return NULL;
@@ -974,7 +973,6 @@ static void *translator(void *a) {
         pthread_mutex_unlock(&tjobs_lock);
         j->fn(j->arg);
         free(j);
-        atomic_fetch_add(&jobs_done, 1);
         atomic_fetch_sub(&jobs_pending, 1);
     }
     return NULL;
@@ -1119,12 +1117,11 @@ static void skip_note(int why, bool compute) {
     }
     skip_top[j].n++;
 }
-static uint64_t cum_build_skips, cum_skips;  // skipped for a build still running / for any reason, never reset (vk_build_hold)
+static uint64_t cum_build_skips;  // skipped for a build still running, never reset
 static uint64_t stat_skipped_held;  // of stat_skipped, those in frames vk_build_hold kept off the screen
-static uint64_t stat_skipped_late;  // of stat_skipped, those vk_build_hold showed late (their builds still running)
-#define SKIP(why) do { int w_ = (why); stat_skipped++, cum_skips++; cum_build_skips += w_ == SK_PROG_BUILDING || w_ == SK_PIPE_BUILDING; \
+#define SKIP(why) do { int w_ = (why); stat_skipped++; cum_build_skips += w_ == SK_PROG_BUILDING || w_ == SK_PIPE_BUILDING; \
                        if (log_skips) skip_note(w_, false); } while (0)
-#define SKIP_CS(why) do { int w_ = (why); stat_skipped++, cum_skips++; cum_build_skips += w_ == SK_CS_BUILDING; \
+#define SKIP_CS(why) do { int w_ = (why); stat_skipped++; cum_build_skips += w_ == SK_CS_BUILDING; \
                           if (log_skips) skip_note(w_, true); } while (0)
 static void skip_log(void) {
     if (log_skips <= 0) return;
@@ -1189,59 +1186,27 @@ static void builds_check(void) {
     pthread_mutex_unlock(&builds_lock);
 }
 
-// At each present (device.c, the render thread). A frame with a draw or dispatch skipped because its program or
-// pipeline is still being built is not shown: the render thread waits here for the builds, up to 10 s a frame, so the
-// game waits with it, and the window keeps the last frame shown. Skipping instead, 2 cores with a cold driver cache
-// showed a black screen for half a minute and more while the game played on (a fifth of the draws missing was enough
-// for black: the lighting pass), and an effect seen for the first time popped in a few frames late, after the stage
-// had started (a boss's attacks: hundreds of draws a stage in the tour). begin(): a run of held frames starts.
-// notice(done, total): from a second into the run, 4 times a second, the builds finished since it started of those
-// plus the rest.
-// A frame with only a few draws waiting (fewer than HOLD_FULL_DRAWS: a new effect or object, not a new area) is held
-// at most LARECOMP_HOLD_SMALL_MS (33) and then shown without them: each such build is a new shader for the driver,
-// 20 to 140 ms, and holding every one stuttered on any PC (issue #14). With a cold cache on the 3-stage tour (median of
-// 3 runs) holds of 50 ms or more outside area entry went 36 -> 12; about 60 frames a run show ~5 draws a frame late,
-// none by more than a frame and none dark (they come with the stage's fade-in).
-#define HOLD_FULL_DRAWS 16
-bool vk_build_hold(void (*begin)(void), void (*notice)(int done, int total)) {
-    static uint64_t l_draws, l_skips, l_all, since;  // since: the run's first held frame (0: the last frame was shown)
-    static int done0;
-    uint64_t drawn = cum_draws - l_draws, skipped = cum_build_skips - l_skips;
-    int jobs = atomic_load(&jobs_pending);
-    bool hold = skipped > 0;
-    static int64_t small_ms = -1;
-    if (small_ms < 0) small_ms = getenv("LARECOMP_HOLD_SMALL_MS") ? atoll(getenv("LARECOMP_HOLD_SMALL_MS")) : 33;
-    bool small = hold && skipped < HOLD_FULL_DRAWS;
-    if (hold) {
-        uint64_t t0 = SDL_GetTicksNS(), painted = 0;
-        uint64_t limit = small ? (uint64_t)small_ms * 1000000ull : 10000000000ull;
-        if (!since && !small) {
-            since = t0, done0 = atomic_load(&jobs_done);
-            if (begin) begin();
-        }
-        while (atomic_load(&jobs_pending) > 0 && SDL_GetTicksNS() - t0 < limit) {
-            uint64_t now = SDL_GetTicksNS();
-            if (notice && now - since > 1000000000ull && now - painted >= 250000000ull) {
-                painted = now;
-                int done = atomic_load(&jobs_done) - done0;
-                notice(done, done + atomic_load(&jobs_pending));
-            }
-            SDL_DelayNS(1000000);
-        }
+// At each present (device.c, the render thread): a frame with a draw or dispatch skipped because its program or
+// pipeline was still being built is not shown. The render thread waits for the builds (up to 10 s), the game with it,
+// and the window keeps the last frame shown. Every program of the game files is built before play (shader_prep.c,
+// once a driver), so a wait here is rare and short. Nothing is drawn over the picture and no frame is shown with draws
+// missing: 0.3.1's "Preparing graphics" box over play read as a debug message, and 0.2.0's frames with draws missing
+// popped in and, on slow PCs, stayed dark.
+bool vk_build_hold(void) {
+    static uint64_t seen;
+    uint64_t waiting = cum_build_skips - seen;
+    if (waiting) {
+        uint64_t t0 = SDL_GetTicksNS();
+        int jobs = atomic_load(&jobs_pending);
+        while (atomic_load(&jobs_pending) > 0 && SDL_GetTicksNS() - t0 < 10000000000ull) SDL_DelayNS(1000000);
         static int nlog;
         if (nlog++ < 200)
-            LOG("[vk] frame held %.0f ms for %d shader / pipeline builds (%llu draws waiting, %llu drawn)\n",
-                (SDL_GetTicksNS() - t0) / 1e6, jobs, (unsigned long long)skipped, (unsigned long long)drawn);
-        if (small && atomic_load(&jobs_pending) > 0) {
-            hold = false;
-            stat_skipped_late += skipped;
-            if (nlog < 200) LOG("[vk] frame shown after %.0f ms with %llu draws missing\n", (SDL_GetTicksNS() - t0) / 1e6,
-                                (unsigned long long)skipped);
-        } else stat_skipped_held += cum_skips - l_all;
+            LOG("[vk] frame held %.0f ms for %d shader / pipeline builds (%llu draws waiting)\n", (SDL_GetTicksNS() - t0) / 1e6,
+                jobs, (unsigned long long)waiting);
+        stat_skipped_held += waiting;
     }
-    if (!hold) since = 0;
-    l_draws = cum_draws, l_skips = cum_build_skips, l_all = cum_skips;
-    return hold;
+    seen = cum_build_skips;
+    return waiting != 0;
 }
 
 const char *renderer_stats(void) {
@@ -1256,10 +1221,10 @@ const char *renderer_stats(void) {
     int compiles = atomic_exchange(&stat_compiles, 0);
     hud_compiles += (uint64_t)compiles;
     snprintf(stats_text, sizeof stats_text,
-             "%llu draws, %llu skipped (%llu in held frames, %llu late), %llu passes, %llu dispatches, %llu flushes, wait %.0fms, compile %d, "
+             "%llu draws, %llu skipped (%llu in held frames), %llu passes, %llu dispatches, %llu flushes, wait %.0fms, compile %d, "
              "fbcopy %llu, upload %.1fMB, deferred %llu, snap %lluKB/%llu",
-             (unsigned long long)stat_draws, (unsigned long long)stat_skipped, (unsigned long long)stat_skipped_held,
-             (unsigned long long)stat_skipped_late, (unsigned long long)stat_passes,
+             (unsigned long long)stat_draws, (unsigned long long)stat_skipped,
+             (unsigned long long)stat_skipped_held, (unsigned long long)stat_passes,
              (unsigned long long)stat_dispatches, (unsigned long long)stat_flushes, (double)stat_wait_ns / 1e6,
              compiles, (unsigned long long)stat_feedback_copies, (double)stat_upload_bytes / 1048576.0,
              (unsigned long long)__atomic_exchange_n(&stat_deferred, 0, __ATOMIC_RELAXED), (unsigned long long)(stat_snap_bytes >> 10),
@@ -1379,7 +1344,7 @@ const char *renderer_stats(void) {
         prof_exec = prof_draw = prof_sets = prof_vtx = prof_submit = prof_pre = prof_key = prof_dyn = prof_tex = prof_up = prof_gpu = 0;
     }
     hud_draws += stat_draws, hud_passes += stat_passes, hud_dispatches += stat_dispatches;  // (renderer_hud's totals)
-    stat_draws = stat_skipped = stat_skipped_held = stat_skipped_late = stat_passes = stat_dispatches = stat_flushes = stat_wait_ns = 0;
+    stat_draws = stat_skipped = stat_skipped_held = stat_passes = stat_dispatches = stat_flushes = stat_wait_ns = 0;
     return stats_text;
 }
 
@@ -6368,6 +6333,16 @@ static void prep_pipeline(void *arg) {
     const PipeIn in = {r->attrib, r->nattrib, r->stream, r->nstream, r->color, r->channel_mask, r->blend_on, r->blend,
                        r->a2c, r->topo, r->poly_fill};
     pipe_key_fill(&a->pp->k, pr, &in, color, ncolor, depth, stencil, r->samples ? r->samples : 1, NULL);
+    if (r->flags & SR_WARM) {
+        // Built for the driver's own shader cache, then dropped: a draw's state builds its own pipeline from the cached
+        // shaders in a millisecond or two. Not in our pipeline cache (every program of the game made it 1.3 GB)
+        PipeCI c;
+        pipe_ci_fill(&c, &a->pp->k);
+        VkPipeline p;
+        if (vkCreateGraphicsPipelines(g_vk.dev, VK_NULL_HANDLE, 1, &c.pi, NULL, &p) == VK_SUCCESS) vkDestroyPipeline(g_vk.dev, p, NULL);
+        free(a->pp), free(a);
+        return;
+    }
     uint64_t ph = hash_words(0xcbf29ce484222325ull, &a->pp->k, sizeof a->pp->k);
     if (!ph) ph = 1;
     // Another record makes the same pipeline (with dynamic vertex input: every record differing only in its vertex
