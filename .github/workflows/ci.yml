@@ -41,7 +41,7 @@ jobs:
           msystem: UCRT64
           update: true
           install: make git python curl tar xz unzip
-          pacboy: clang:p lld:p binutils:p python:p sdl3:p ffmpeg:p vulkan-devel:p shaderc:p spirv-tools:p pkgconf:p
+          pacboy: clang:p lld:p binutils:p python:p sdl3:p ffmpeg:p vulkan-devel:p shaderc:p spirv-tools:p pkgconf:p zstd:p
             vulkan-memory-allocator:p
       - name: Runtime builds
         run: bash tools/ci/run.sh build

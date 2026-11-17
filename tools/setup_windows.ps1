@@ -16,7 +16,7 @@ $bash = 'C:\msys64\usr\bin\bash.exe'
 & $bash -lc 'pacman -Syuu --noconfirm' | Out-Null
 & $bash -lc 'pacman -Syuu --noconfirm' | Out-Null  # second pass after a core update
 $mp = if ($arm) { 'mingw-w64-clang-aarch64' } else { 'mingw-w64-ucrt-x86_64' }
-$pkgs = @('make', 'zip', 'unzip') + (@('clang', 'lld', 'sdl3', 'ffmpeg', 'vulkan-devel', 'shaderc', 'spirv-tools', 'pkgconf',
+$pkgs = @('make', 'zip', 'unzip') + (@('clang', 'lld', 'sdl3', 'ffmpeg', 'vulkan-devel', 'shaderc', 'spirv-tools', 'pkgconf', 'zstd',
         'gdb', 'vulkan-memory-allocator', 'vulkan-validation-layers') | ForEach-Object { "$mp-$_" })
 if (-not $arm) { $pkgs += "$mp-nasm" }  # (make deps-windows: FFmpeg's VP9 assembly; ARM64 assembles with clang)
 & $bash -lc "pacman -S --needed --noconfirm $($pkgs -join ' ')"
