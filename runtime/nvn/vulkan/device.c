@@ -688,6 +688,10 @@ static void log_pipeline_stats(VkPipeline p) {
     }
 }
 
+#ifdef VK_KHR_pipeline_binary
+static bool own_cache;  // the driver's internal cache off (device creation)
+#endif
+
 // Pipelines from library parts (exec.c build_pipeline): not with shader statistics or pipeline binaries, which go
 // through vk_create_graphics_pipeline whole
 bool vk_gpl_usable(void) {
@@ -912,15 +916,21 @@ static void create_device(void) {
         bool amd = drv.driverID == VK_DRIVER_ID_AMD_PROPRIETARY || drv.driverID == VK_DRIVER_ID_AMD_OPEN_SOURCE;
         bool can = pbin_ext && have_pbin.pipelineBinaries && have_m5.maintenance5;
         pb.on = can && (e && *e ? atoi(e) != 0 : amd);
+        // Without our binaries: the driver's internal cache off where it can be, so what the shader prepare step built
+        // comes back from our pipeline cache file. (NVIDIA's own cache is capped and shared: once full it kept none of
+        // the prepared shader parts, 274 compiled again in the first play.) LARECOMP_VK_DRIVER_CACHE=1 keeps it.
+        const char *dc = getenv("LARECOMP_VK_DRIVER_CACHE");
+        own_cache = can && !pb.on && pbp.pipelineBinaryInternalCacheControl && !(dc && atoi(dc));
         if (pbin_ext)
             LOG("[vk] pipeline binaries: feature %s, internal cache %d (control %d, prefers it %d, precompiled %d), "
                 "compressed %d -> %s\n", have_pbin.pipelineBinaries ? "yes" : "no", pbp.pipelineBinaryInternalCache,
                 pbp.pipelineBinaryInternalCacheControl, pbp.pipelineBinaryPrefersInternalCache,
                 pbp.pipelineBinaryPrecompiledInternalCache, pbp.pipelineBinaryCompressedData,
-                pb.on ? "stored by us (cache/vk_binaries)" : !can ? "pipeline cache (not supported)" :
+                pb.on ? "stored by us (cache/vk_binaries)" : own_cache ? "pipeline cache, the driver's own cache off" :
+                !can ? "pipeline cache (not supported)" :
                 e && *e ? "pipeline cache (LARECOMP_VK_PIPELINE_BINARY=0)" : "pipeline cache (not an AMD driver)");
         else if (e && atoi(e)) LOG("[vk] pipeline binaries: no VK_KHR_pipeline_binary; pipeline cache\n");
-        if (pb.on) {
+        if (pb.on || own_cache) {
             ext[n_ext++] = VK_KHR_MAINTENANCE_5_EXTENSION_NAME;
             ext[n_ext++] = VK_KHR_PIPELINE_BINARY_EXTENSION_NAME;
         }
@@ -1018,7 +1028,10 @@ static void create_device(void) {
                                                      .maintenance5 = VK_TRUE};
     VkPhysicalDevicePipelineBinaryFeaturesKHR en_pbin = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PIPELINE_BINARY_FEATURES_KHR,
                                                          .pipelineBinaries = VK_TRUE, .pNext = &en_m5};
-    if (pb.on) en_m5.pNext = f.pNext, f.pNext = &en_pbin;
+    if (pb.on || own_cache) en_m5.pNext = f.pNext, f.pNext = &en_pbin;
+    VkDevicePipelineBinaryInternalCacheControlKHR en_icc = {.sType = VK_STRUCTURE_TYPE_DEVICE_PIPELINE_BINARY_INTERNAL_CACHE_CONTROL_KHR,
+                                                            .disableInternalCache = VK_TRUE};
+    if (own_cache) en_icc.pNext = f.pNext, f.pNext = &en_icc;
 #endif
 #ifdef VK_EXT_graphics_pipeline_library
     VkPhysicalDeviceGraphicsPipelineLibraryFeaturesEXT en_gpl = {

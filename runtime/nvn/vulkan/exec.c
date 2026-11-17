@@ -1192,6 +1192,7 @@ static void builds_check(void) {
 // once a driver), so a wait here is rare and short. Nothing is drawn over the picture and no frame is shown with draws
 // missing: 0.3.1's "Preparing graphics" box over play read as a debug message, and 0.2.0's frames with draws missing
 // popped in and, on slow PCs, stayed dark.
+_Atomic uint64_t cp_ns[4];  // (measurement) compile_program: SPIR-V loads, reflection, modules, the rest
 bool vk_build_hold(void) {
     static uint64_t seen;
     uint64_t waiting = cum_build_skips - seen;
@@ -1210,6 +1211,11 @@ bool vk_build_hold(void) {
                 (unsigned long long)waiting, (unsigned long long)(v[0] - was[0]), (v[1] - was[1]) / 1e6,
                 (unsigned long long)(v[2] - was[2]), (v[3] - was[3]) / 1e6, (unsigned long long)(v[4] - was[4]), (v[5] - was[5]) / 1e6);
             memcpy(was, v, sizeof was);
+            static uint64_t cw[4];
+            uint64_t cn[4] = {cp_ns[0], cp_ns[1], cp_ns[2], cp_ns[3]};
+            LOG("[vk]   compile split: spirv load %.0f ms, reflect %.0f ms, modules %.0f ms, layout %.0f ms\n", (cn[0] - cw[0]) / 1e6,
+                (cn[1] - cw[1]) / 1e6, (cn[2] - cw[2]) / 1e6, (cn[3] - cw[3]) / 1e6);
+            memcpy(cw, cn, sizeof cw);
         }
         stat_skipped_held += waiting;
     }
@@ -1979,6 +1985,7 @@ typedef struct {
     VkDescriptorSetLayout set_layout[4];  // [2] (compute: [1]): the heap chunk set (gmem_chunk_layout; with a geometry
                                           // stage and no heap: empty); [3]: the geometry stage's
     VkPipelineLayout layout;
+    uint64_t sig_in[3], sig_spv[3], sig_lay;  // (LARECOMP_PART_SIG, a measurement)
     uint64_t spv_key[3];  // a stage whose translation came from the cache (tr_translate, its msl NULL): its SPIR-V's
                           // cache key; [0] vertex, [1] fragment, [2] geometry
     bool vs_uses_vid;
@@ -2103,6 +2110,7 @@ static bool spirv_strip_early_tests(uint32_t *w, size_t *nwords) {
     return false;
 }
 
+static uint64_t hash_words(uint64_t h, const void *p, size_t n);
 static void compile_program(void *arg) {
     Prog *p = arg;
     uint64_t t0 = SDL_GetTicksNS();
@@ -2114,13 +2122,22 @@ static void compile_program(void *arg) {
     uint32_t *sg = !sf || !p->gi ? NULL : p->gi->msl ? vk_glsl_to_spirv(p->gi->msl, STAGE_GEOMETRY, "gs", &ng)
                                                      : vk_spirv_load(p->spv_key[2], &ng);
     if (!sv || !sf || (p->gi && !sg)) { free(sv); free(sf); free(sg); atomic_store(&p->state, 2); build_end(bs); return; }
+    uint64_t tA = SDL_GetTicksNS();
+    cp_ns[0] += tA - t0;
     p->nbinds = vk_reflect(sv, nv, p->binds, MAX_BIND);
     p->nbinds += vk_reflect(sf, nf, p->binds + p->nbinds, MAX_BIND - p->nbinds);
     if (sg) p->nbinds += vk_reflect(sg, ng, p->binds + p->nbinds, MAX_BIND - p->nbinds);
+    uint64_t tB = SDL_GetTicksNS();
+    cp_ns[1] += tB - tA;
     p->vs = vk_module(sv, nv);
     p->fs = vk_module(sf, nf);
     if (sg) p->gs = vk_module(sg, ng);
     if (spirv_strip_early_tests(sf, &nf)) p->fs_late = vk_module(sf, nf);
+    uint64_t tC = SDL_GetTicksNS();
+    cp_ns[2] += tC - tB;
+    uint32_t *sv_sig_w = NULL, *sf_sig_w = NULL;
+    size_t sv_sig_n = nv, sf_sig_n = nf;
+    if (getenv("LARECOMP_PART_SIG")) sv_sig_w = malloc(nv * 4), memcpy(sv_sig_w, sv, nv * 4), sf_sig_w = malloc(nf * 4), memcpy(sf_sig_w, sf, nf * 4);
     free(sv);
     free(sf);
     free(sg);
@@ -2130,6 +2147,21 @@ static void compile_program(void *arg) {
     if (p->gi) free(p->gi->msl), p->gi->msl = NULL;
     mark_dynamic(p);
     p->layout = make_layout(p, 2, VK_SHADER_STAGE_VERTEX_BIT, VK_SHADER_STAGE_FRAGMENT_BIT);
+    if (getenv("LARECOMP_PART_SIG")) {
+        p->sig_spv[0] = hash_words(1, sv_sig_w, sv_sig_n * 4), p->sig_spv[1] = hash_words(1, sf_sig_w, sf_sig_n * 4);
+        uint64_t h = 7;
+        for (int i = 0; i < p->nbinds; i++) {
+            uint32_t b[3] = {p->binds[i].set, p->binds[i].binding, (uint32_t)p->binds[i].type};
+            h = hash_words(h, b, sizeof b);
+        }
+        uint32_t pc[4] = {p->vi->npush, p->fi->npush, p->fi->push_base, (uint32_t)p->nbinds};
+        bool gm = gc_shift && (p->vi->uses_gmem || p->fi->uses_gmem);
+        uint32_t g2[3] = {gm, (uint32_t)gc_lazy, gc_shift};
+        h = hash_words(hash_words(h, pc, sizeof pc), g2, sizeof g2);
+        p->sig_lay = h;
+    }
+    free(sv_sig_w), free(sf_sig_w);
+    cp_ns[3] += SDL_GetTicksNS() - tC;
     atomic_fetch_add(&stat_compiles, 1);
     bool ok = p->vs && p->fs && (!p->gi || p->gs);
     if (!ok) LOG("[shader] vs/fs %llx %llx (gs %llx): shader module creation failed\n", (unsigned long long)p->code[0],
@@ -2156,7 +2188,6 @@ static TrRec *tr_recs;     // (translate_lock) open addressing by in (0: empty)
 static size_t tr_cap, tr_n;
 static FILE *tr_out;
 static int tr_state;       // 0 not opened, 1 on, 2 off (LARECOMP_VK_NO_SPIRV_CACHE, or the file can't be written)
-static uint64_t hash_words(uint64_t h, const void *p, size_t n);
 
 static void tr_put(const TrRec *r) {
     if (tr_n * 2 >= tr_cap) {
@@ -2230,6 +2261,7 @@ static ShaderInfo *tr_translate(Prog *p, int slot, const uint8_t *code, size_t m
     if (!tr_state) tr_open();
     bool on = tr_state == 1 && !maxwell_dbg_code;
     uint64_t in = on ? tr_in_hash(code, max, stage, k) : 0;
+    p->sig_in[slot] = in;
     const TrRec *r = on ? tr_get(in) : NULL;
     if (r && vk_spirv_have(r->spv)) {
         ShaderInfo *si = malloc(sizeof *si);
@@ -2918,6 +2950,21 @@ static VkPipeline gpl_part(int part, uint64_t key, const PipeCI *c) {
 }
 
 // One part made (gpl_part, and the pre-build's warm builds: shader_prep.c)
+static void part_sig(const char *who, int part, const Prog *pr, const PipeCI *c) {
+    if (!getenv("LARECOMP_PART_SIG") || (part != 1 && part != 2)) return;
+    uint64_t st = hash_words(3, (const uint8_t *)&c->rs + 16, sizeof c->rs - 16);
+    st = hash_words(st, (const uint8_t *)&c->ms + 16, sizeof c->ms - 16);
+    st = hash_words(st, (const uint8_t *)&c->ds + 16, sizeof c->ds - 16);
+    uint32_t vc[2] = {c->vs.viewportCount, c->vs.scissorCount};
+    st = hash_words(st, vc, sizeof vc);
+    st = hash_words(st, c->dyn, c->dy.dynamicStateCount * sizeof *c->dyn);
+    const VkSpecializationInfo *si = c->stages[part == 1 ? 0 : 1].pSpecializationInfo;
+    uint64_t sp = si ? hash_words(hash_words(5, si->pData, si->dataSize), si->pMapEntries, si->mapEntryCount * sizeof *si->pMapEntries) : 0;
+    LOG("[partsig] %s %d in %016llx spv %016llx lay %016llx st %016llx spec %016llx\n", who, part,
+        (unsigned long long)pr->sig_in[part == 1 ? 0 : 1], (unsigned long long)pr->sig_spv[part == 1 ? 0 : 1],
+        (unsigned long long)pr->sig_lay, (unsigned long long)st, (unsigned long long)sp);
+}
+
 static VkResult gpl_part_make(int part, const PipeCI *c, VkPipeline *out) {
     static const VkGraphicsPipelineLibraryFlagsEXT flag[4] = {
         VK_GRAPHICS_PIPELINE_LIBRARY_VERTEX_INPUT_INTERFACE_BIT_EXT, VK_GRAPHICS_PIPELINE_LIBRARY_PRE_RASTERIZATION_SHADERS_BIT_EXT,
@@ -3019,6 +3066,7 @@ static bool gpl_build(Pipe *pp, const PipeCI *c) {
         uint64_t t0 = SDL_GetTicksNS();
         if (!(lib[i] = gpl_part(i, key[i], c))) return false;
         uint64_t ms = (SDL_GetTicksNS() - t0) / 1000000;
+        if (ms >= 5) part_sig("play", i, pp->k.prog, c);
         static int nslow;
         if (ms >= 5 && nslow++ < 300)
             LOG("[gplslow] part %d %llu ms vs=%llx fs=%llx poly=%d a2c=%d recol=%d samples=%d\n", i, (unsigned long long)ms,
@@ -6645,8 +6693,14 @@ static void prep_pipeline(void *arg) {
         VkPipeline p;
         extern bool vk_gpl_usable(void);
         if (vk_gpl_usable() && !pr->vs_only) {  // (the shader parts, what a draw links in a fraction of a millisecond)
-            for (int part = 1; part <= 2; part++)
-                if (gpl_part_make(part, &c, &p) == VK_SUCCESS) vkDestroyPipeline(g_vk.dev, p, NULL);
+            VkPipeline lib[4] = {0};  // (all four, linked as a draw links them: the driver keeps the shader parts then)
+            bool ok = true;
+            for (int part = 0; part < 4; part++) {
+                part_sig("warm", part, pr, &c);
+                ok &= gpl_part_make(part, &c, &lib[part]) == VK_SUCCESS;
+            }
+            if (ok && gpl_link(lib, c.pi.layout, false, &p) == VK_SUCCESS) vkDestroyPipeline(g_vk.dev, p, NULL);
+            for (int part = 0; part < 4; part++) if (lib[part]) vkDestroyPipeline(g_vk.dev, lib[part], NULL);
         } else if (vkCreateGraphicsPipelines(g_vk.dev, VK_NULL_HANDLE, 1, &c.pi, NULL, &p) == VK_SUCCESS) vkDestroyPipeline(g_vk.dev, p, NULL);
         VkShaderModule m[4] = {pr->vs, pr->fs, pr->gs, pr->fs_late};
         for (int i = 0; i < 4; i++) if (m[i]) vkDestroyShaderModule(g_vk.dev, m[i], NULL);
