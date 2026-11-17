@@ -688,6 +688,15 @@ static void log_pipeline_stats(VkPipeline p) {
     }
 }
 
+// Pipelines from library parts (exec.c build_pipeline): not with shader statistics or pipeline binaries, which go
+// through vk_create_graphics_pipeline whole
+bool vk_gpl_usable(void) {
+#ifdef VK_KHR_pipeline_binary
+    if (pb.on) return false;
+#endif
+    return g_vk.gpl && !g_shader_stats;
+}
+
 VkResult vk_create_graphics_pipeline(const VkGraphicsPipelineCreateInfo *ci, VkPipeline *out) {
     if (g_shader_stats) {
         VkGraphicsPipelineCreateInfo c = *ci;
@@ -824,6 +833,7 @@ static void create_device(void) {
     g_vk.divisor = g_vk.divisor && have_div.vertexAttributeInstanceRateDivisor;
     g_fault_ext = fault = fault && have_ff.deviceFault;
     g_va_report = g_va_report && fault && have_va.reportAddressBinding;
+    bool gpl_fast = false;  // (the graphics pipeline library with fast linking: exec.c builds pipelines from its parts)
     {   // what the driver offers for building pipelines (one line, for #92 reports)
         VkPhysicalDeviceDriverProperties drv = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};
         VkPhysicalDeviceProperties2 pr = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &drv};
@@ -873,6 +883,7 @@ static void create_device(void) {
                     "scratch memory until its reset\n");
         }
 #ifdef VK_EXT_graphics_pipeline_library
+        gpl_fast = gpl_ext && have_gpl.graphicsPipelineLibrary && gplp.graphicsPipelineLibraryFastLinking;
         if (gpl_ext)
             snprintf(gpl, sizeof gpl, "%s (fast linking %s, independent interpolation decoration %s)",
                      have_gpl.graphicsPipelineLibrary ? "yes" : "no", gplp.graphicsPipelineLibraryFastLinking ? "yes" : "no",
@@ -933,14 +944,24 @@ static void create_device(void) {
                  !vids_ext ? "no VK_EXT_vertex_input_dynamic_state" : "vertexInputDynamicState not supported");
     }
 #ifdef VK_EXT_graphics_pipeline_library
-    {   // LARECOMP_VK_GPL_PROBE=1: library builds timed after shader preparation (exec.c gpl_probe); nothing else uses it
+    {   // LARECOMP_VK_GPL_PROBE=1: library builds timed after shader preparation (exec.c gpl_probe)
         const char *e = getenv("LARECOMP_VK_GPL_PROBE");
         if (e && atoi(e)) {
             g_vk.gpl_probe = gpl_ext && have_gpl.graphicsPipelineLibrary;
-            if (g_vk.gpl_probe) {
-                ext[n_ext++] = VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME;
-                ext[n_ext++] = VK_EXT_GRAPHICS_PIPELINE_LIBRARY_EXTENSION_NAME;
-            } else LOG("[gpl] probe: the driver has no graphics pipeline library; skipped\n");
+            if (!g_vk.gpl_probe) LOG("[gpl] probe: the driver has no graphics pipeline library; skipped\n");
+        }
+        // Pipelines from their parts (exec.c build_pipeline): a new combination of shaders already built links in well
+        // under a millisecond instead of a full build of 20 to 140 ms, so a first visit holds far fewer frames. The
+        // linked pipeline is replaced by an optimized one built in the background. LARECOMP_VK_GPL=0: full builds.
+        const char *on = getenv("LARECOMP_VK_GPL");
+        bool off = on && *on && !atoi(on);
+        g_vk.gpl = gpl_fast && !off;
+        LOG("[vk] pipelines: %s\n", g_vk.gpl ? "linked from shader parts, optimized in the background"
+                                   : off ? "full builds (LARECOMP_VK_GPL=0)"
+                                   : "full builds (no graphics pipeline library with fast linking)");
+        if (g_vk.gpl || g_vk.gpl_probe) {
+            ext[n_ext++] = VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME;
+            ext[n_ext++] = VK_EXT_GRAPHICS_PIPELINE_LIBRARY_EXTENSION_NAME;
         }
     }
 #else
@@ -1002,7 +1023,7 @@ static void create_device(void) {
 #ifdef VK_EXT_graphics_pipeline_library
     VkPhysicalDeviceGraphicsPipelineLibraryFeaturesEXT en_gpl = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_GRAPHICS_PIPELINE_LIBRARY_FEATURES_EXT, .graphicsPipelineLibrary = VK_TRUE};
-    if (g_vk.gpl_probe) en_gpl.pNext = f.pNext, f.pNext = &en_gpl;
+    if (g_vk.gpl || g_vk.gpl_probe) en_gpl.pNext = f.pNext, f.pNext = &en_gpl;
 #endif
     VkPhysicalDeviceFeatures *b = &f.features, *h = &have.features;
     b->independentBlend = h->independentBlend;

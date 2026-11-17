@@ -2113,6 +2113,10 @@ static void compile_program(void *arg) {
     free(sv);
     free(sf);
     free(sg);
+    // (the GLSL text is read only up to here; the pre-build keeps tens of thousands of programs)
+    free(p->vi->msl), p->vi->msl = NULL;
+    free(p->fi->msl), p->fi->msl = NULL;
+    if (p->gi) free(p->gi->msl), p->gi->msl = NULL;
     mark_dynamic(p);
     p->layout = make_layout(p, 2, VK_SHADER_STAGE_VERTEX_BIT, VK_SHADER_STAGE_FRAGMENT_BIT);
     atomic_fetch_add(&stat_compiles, 1);
@@ -2671,7 +2675,10 @@ typedef struct {
 // specialization constant no shader reads, with a value new to each run
 static uint32_t cold_nonce(void) {
     static uint32_t n = 1;
-    if (n == 1) n = getenv("LARECOMP_VK_COLD") && atoi(getenv("LARECOMP_VK_COLD")) ? (uint32_t)SDL_GetTicksNS() | 2u : 0;
+    if (n == 1) {  // (a value over 1: that value, so a pre-build process and a later play process see the same keys)
+        int e = getenv("LARECOMP_VK_COLD") ? atoi(getenv("LARECOMP_VK_COLD")) : 0;
+        n = e > 1 ? (uint32_t)e | 2u : e ? (uint32_t)SDL_GetTicksNS() | 2u : 0;
+    }
     return n;
 }
 
@@ -2745,6 +2752,154 @@ static void pipe_ci_fill(PipeCI *c, const PipeKey *k) {
                                            .pDynamicState = &c->dy, .layout = k->prog->layout};
 }
 
+// ================================================================== pipelines from library parts (g_vk.gpl, device.c)
+// The four parts of VK_EXT_graphics_pipeline_library, each kept by what it bakes in: a pipeline whose shaders were
+// built before (for another blend, target format or topology) links from those parts in well under a millisecond,
+// where a full build takes 20 to 140 ms (LARECOMP_VK_GPL_PROBE). A first visit to an area held a frame for each such
+// build (issue #14: ~90 ms holds, 12 s of them in two minutes on an RTX 4070 SUPER). The fast-linked pipeline is
+// replaced by one linked with link-time optimization on a thread of its own (lto_thread), so that never delays a
+// build a draw waits for. Programs and parts are never freed: a part's key may name its program by address.
+typedef struct GplPart { uint64_t key; struct GplPart *next; VkPipeline lib; _Atomic int state; } GplPart;  // 0 building, 1 ready, 2 failed
+#define GPL_TAB 4096
+static GplPart *gpl_tab[GPL_TAB];
+static pthread_mutex_t gpl_lock = PTHREAD_MUTEX_INITIALIZER;
+static _Atomic uint64_t gpl_parts_built, gpl_links;
+
+// The part (0 vertex input, 1 pre-rasterization, 2 fragment shader, 3 fragment output) for c, built once: a worker that
+// needs one another worker is building waits for it
+static VkResult gpl_part_make(int part, const PipeCI *c, VkPipelineCache cache, VkPipeline *out);
+static VkPipeline gpl_part(int part, uint64_t key, const PipeCI *c) {
+    pthread_mutex_lock(&gpl_lock);
+    GplPart **slot = &gpl_tab[(key ^ (key >> 32)) & (GPL_TAB - 1)], *p = *slot;
+    while (p && p->key != key) p = p->next;
+    bool mine = !p;
+    if (mine) {
+        p = calloc(1, sizeof *p);
+        p->key = key;
+        p->next = *slot;
+        *slot = p;
+    }
+    pthread_mutex_unlock(&gpl_lock);
+    if (!mine) {
+        while (atomic_load(&p->state) == 0) { struct timespec ts = {0, 200000}; nanosleep(&ts, NULL); }
+        return atomic_load(&p->state) == 1 ? p->lib : VK_NULL_HANDLE;
+    }
+    VkResult r = gpl_part_make(part, c, g_vk.pcache, &p->lib);
+    if (r != VK_SUCCESS) {
+        static int n;
+        if (n++ < 10) LOG("[vk] pipeline part %d failed: %d\n", part, r);
+    }
+    atomic_fetch_add(&gpl_parts_built, 1);
+    atomic_store(&p->state, r == VK_SUCCESS ? 1 : 2);
+    return r == VK_SUCCESS ? p->lib : VK_NULL_HANDLE;
+}
+
+// One part made (gpl_part, and the pre-build's warm builds: shader_prep.c)
+static VkResult gpl_part_make(int part, const PipeCI *c, VkPipelineCache cache, VkPipeline *out) {
+    static const VkGraphicsPipelineLibraryFlagsEXT flag[4] = {
+        VK_GRAPHICS_PIPELINE_LIBRARY_VERTEX_INPUT_INTERFACE_BIT_EXT, VK_GRAPHICS_PIPELINE_LIBRARY_PRE_RASTERIZATION_SHADERS_BIT_EXT,
+        VK_GRAPHICS_PIPELINE_LIBRARY_FRAGMENT_SHADER_BIT_EXT, VK_GRAPHICS_PIPELINE_LIBRARY_FRAGMENT_OUTPUT_INTERFACE_BIT_EXT};
+    // (the rendering info: formats only for the fragment output part, the shader parts' keys leave them out)
+    VkPipelineRenderingCreateInfo ri = c->ri;
+    if (part != 3) ri.colorAttachmentCount = 0, ri.depthAttachmentFormat = ri.stencilAttachmentFormat = VK_FORMAT_UNDEFINED;
+    VkGraphicsPipelineLibraryCreateInfoEXT li = {.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_LIBRARY_CREATE_INFO_EXT,
+                                                 .pNext = &ri, .flags = flag[part]};
+    VkGraphicsPipelineCreateInfo pi = {.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, .pNext = &li,
+        .flags = VK_PIPELINE_CREATE_LIBRARY_BIT_KHR | VK_PIPELINE_CREATE_RETAIN_LINK_TIME_OPTIMIZATION_INFO_BIT_EXT,
+        .pDynamicState = &c->dy, .layout = c->pi.layout};
+    switch (part) {
+    case 0: pi.pVertexInputState = c->pi.pVertexInputState; pi.pInputAssemblyState = &c->ia; break;
+    case 1: pi.stageCount = 1; pi.pStages = c->stages; pi.pViewportState = &c->vs; pi.pRasterizationState = &c->rs; break;
+    case 2: pi.stageCount = 1; pi.pStages = &c->stages[1]; pi.pDepthStencilState = &c->ds; pi.pMultisampleState = &c->ms; break;
+    case 3: pi.pColorBlendState = &c->cb; pi.pMultisampleState = &c->ms; break;
+    }
+    VkPipelineShaderStageCreateInfo pre[2];
+    if (part == 1 && c->pi.stageCount == 3) {  // (c->stages: vertex, fragment, geometry)
+        pre[0] = c->stages[0], pre[1] = c->stages[2];
+        pi.stageCount = 2, pi.pStages = pre;
+    }
+    return vkCreateGraphicsPipelines(g_vk.dev, cache, 1, &pi, NULL, out);
+}
+
+// The parts' keys: what each one bakes in (pipe_ci_fill), the program by address
+static void gpl_keys(const PipeKey *k, uint64_t key[4]) {
+    uint64_t h = hash_words(0x6770c0ull, &k->topo_class, 1);
+    if (!g_vk.vids) {  // (dynamic vertex input: the layout is set per draw, and left out of the key)
+        h = hash_words(h, k->attr_fmt, sizeof k->attr_fmt + sizeof k->attr_off + sizeof k->attr_bind);
+        h = hash_words(h, &k->attr_mask, sizeof k->attr_mask);
+        h = hash_words(h, k->stride, sizeof k->stride + sizeof k->divisor + sizeof k->used_streams);
+    }
+    key[0] = h;
+    key[1] = hash_words(hash_words(0x6770c1ull, &k->prog, sizeof k->prog), &k->poly_fill, 1);
+    uint32_t fs[3] = {k->a2c, k->recol, k->samples};
+    key[2] = hash_words(hash_words(0x6770c2ull, &k->prog, sizeof k->prog), fs, sizeof fs);
+    h = hash_words(0x6770c3ull, k->color, sizeof k->color);
+    uint32_t fo[6] = {k->ncolor, k->samples, k->a2c, k->blend_on, (uint32_t)k->depth, (uint32_t)k->stencil};
+    h = hash_words(h, fo, sizeof fo);
+    h = hash_words(h, k->blend, sizeof k->blend);
+    key[3] = hash_words(h, k->write_mask, sizeof k->write_mask);
+}
+
+static VkResult gpl_link(VkPipeline lib[4], VkPipelineLayout layout, bool optimized, VkPipeline *out) {
+    VkPipelineLibraryCreateInfoKHR li = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LIBRARY_CREATE_INFO_KHR, .libraryCount = 4, .pLibraries = lib};
+    VkGraphicsPipelineCreateInfo pi = {.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, .pNext = &li,
+        .flags = optimized ? VK_PIPELINE_CREATE_LINK_TIME_OPTIMIZATION_BIT_EXT : 0, .layout = layout};
+    return vkCreateGraphicsPipelines(g_vk.dev, g_vk.pcache, 1, &pi, NULL, out);
+}
+
+// The optimized links, one at a time on their own thread (newest first is no better: the queue is short)
+typedef struct LtoJob { Pipe *pp; VkPipeline lib[4]; struct LtoJob *next; } LtoJob;
+static LtoJob *lto_head, *lto_tail;
+static pthread_mutex_t lto_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t lto_cond = PTHREAD_COND_INITIALIZER;
+static void *lto_thread(void *a) {
+    (void)a;
+    plat_thread_default_core();
+    for (;;) {
+        pthread_mutex_lock(&lto_lock);
+        while (!lto_head) pthread_cond_wait(&lto_cond, &lto_lock);
+        LtoJob *j = lto_head;
+        lto_head = j->next;
+        if (!lto_head) lto_tail = NULL;
+        pthread_mutex_unlock(&lto_lock);
+        VkPipeline opt;
+        // (the fast-linked one stays alive: command buffers recorded with it may still be in flight)
+        if (gpl_link(j->lib, j->pp->k.prog->layout, true, &opt) == VK_SUCCESS) __atomic_store_n(&j->pp->pipe, opt, __ATOMIC_RELEASE);
+        free(j);
+    }
+    return NULL;
+}
+static void lto_start(void) {
+    pthread_t t;
+    pthread_create(&t, NULL, lto_thread, NULL);
+    pthread_detach(t);
+}
+static void lto_queue(Pipe *pp, VkPipeline lib[4]) {
+    static pthread_once_t once = PTHREAD_ONCE_INIT;
+    pthread_once(&once, lto_start);
+    LtoJob *j = calloc(1, sizeof *j);
+    j->pp = pp;
+    memcpy(j->lib, lib, sizeof j->lib);
+    pthread_mutex_lock(&lto_lock);
+    if (lto_tail) lto_tail->next = j; else lto_head = j;
+    lto_tail = j;
+    pthread_cond_signal(&lto_cond);
+    pthread_mutex_unlock(&lto_lock);
+}
+
+// pp from its parts: the fast link, the optimized one queued. false: a part failed (then a full build)
+static bool gpl_build(Pipe *pp, const PipeCI *c) {
+    uint64_t key[4];
+    gpl_keys(&pp->k, key);
+    VkPipeline lib[4];
+    for (int i = 0; i < 4; i++)
+        if (!(lib[i] = gpl_part(i, key[i], c))) return false;
+    if (gpl_link(lib, c->pi.layout, false, &pp->pipe) != VK_SUCCESS) return false;
+    atomic_fetch_add(&gpl_links, 1);
+    lto_queue(pp, lib);
+    return true;
+}
+
 static void build_pipeline(void *arg) {
     Pipe *pp = arg;
     PipeKey *k = &pp->k;
@@ -2753,6 +2908,14 @@ static void build_pipeline(void *arg) {
     uint64_t t0 = SDL_GetTicksNS();
     int bs = build_begin("pipeline vs/fs", k->prog->code[0] ? k->prog->code[0] : k->prog->prep_vh,
                          k->prog->code[1] ? k->prog->code[1] : k->prog->prep_fh);
+    extern bool vk_gpl_usable(void);
+    if (vk_gpl_usable() && !k->prog->vs_only && gpl_build(pp, &c)) {  // (vs_only: rasterizer discard, no fragment parts)
+        build_end(bs);
+        atomic_fetch_add(&stat_compiles, 1);
+        atomic_store(&pp->state, 1);
+        slow_build(t0, "pipeline vs/fs", k->prog->code[0], k->prog->code[1]);
+        return;
+    }
     SLOW_FEEDBACK(c.pi);
     extern bool g_shader_stats;
     extern __thread char g_stats_label[128];
@@ -6348,7 +6511,15 @@ static void prep_pipeline(void *arg) {
         PipeCI c;
         pipe_ci_fill(&c, &a->pp->k);
         VkPipeline p;
-        if (vkCreateGraphicsPipelines(g_vk.dev, VK_NULL_HANDLE, 1, &c.pi, NULL, &p) == VK_SUCCESS) vkDestroyPipeline(g_vk.dev, p, NULL);
+        extern bool vk_gpl_usable(void);
+        if (vk_gpl_usable() && !pr->vs_only) {  // (the shader parts, what a draw links in a fraction of a millisecond)
+            for (int part = 1; part <= 2; part++)
+                if (gpl_part_make(part, &c, VK_NULL_HANDLE, &p) == VK_SUCCESS) vkDestroyPipeline(g_vk.dev, p, NULL);
+        } else if (vkCreateGraphicsPipelines(g_vk.dev, VK_NULL_HANDLE, 1, &c.pi, NULL, &p) == VK_SUCCESS) vkDestroyPipeline(g_vk.dev, p, NULL);
+        VkShaderModule m[4] = {pr->vs, pr->fs, pr->gs, pr->fs_late};
+        for (int i = 0; i < 4; i++) if (m[i]) vkDestroyShaderModule(g_vk.dev, m[i], NULL);
+        if (pr->layout) vkDestroyPipelineLayout(g_vk.dev, pr->layout, NULL);
+        maxwell_free(pr->vi), maxwell_free(pr->fi), maxwell_free(pr->gi), free(pr);
         free(a->pp), free(a);
         return;
     }
@@ -6389,7 +6560,8 @@ bool renderer_prepare(const ShaderRec *r, const ShaderBlob *vsb, const ShaderBlo
     for (int i = 0; i < r->ncolor && i < 8; i++) if (r->color[i]) fkey.rt_kind[i] = (uint8_t)rt_kind(r->color[i]);
     rt_kinds_written(&fkey, fsb->code);
     uint64_t ck = prog_content_key(r->vs, r->fs, &vkey, &fkey);
-    Prog *p = PREP_GET(prep_progs, ck);
+    bool warm = (r->flags & SR_WARM) != 0;  // (the pre-build: built for the driver's cache, then freed: prep_pipeline)
+    Prog *p = warm ? NULL : PREP_GET(prep_progs, ck);
     if (!p) {
         p = calloc(1, sizeof *p);
         p->code[0] = (uintptr_t)vsb->code;
@@ -6407,8 +6579,11 @@ bool renderer_prepare(const ShaderRec *r, const ShaderBlob *vsb, const ShaderBlo
             save_glsl(p->fi->msl, p->fs_rt_hash, "pfs");
         }
         p->code[0] = p->code[1] = 0;  // (the game files' copies are gone after this call)
-        PREP_PUT(prep_progs, ck, p);  // (failed ones too: the game then skips them as it would its own)
-        if (!ok) return false;
+        if (!warm) PREP_PUT(prep_progs, ck, p);  // (failed ones too: the game then skips them as it would its own)
+        if (!ok) {
+            if (warm) maxwell_free(p->vi), maxwell_free(p->fi), free(p);
+            return false;
+        }
         prep_job(compile_program, p);
     }
     if (atomic_load(&p->state) == 2) return false;

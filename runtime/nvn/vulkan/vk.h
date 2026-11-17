@@ -58,6 +58,7 @@ typedef struct {
     PFN_vkCmdSetVertexInputEXT set_vertex_input;
     // LARECOMP_VK_GPL_PROBE=1 only (exec.c gpl_probe, measurement): VK_EXT_graphics_pipeline_library enabled
     bool gpl_probe;
+    bool gpl;  // pipelines linked from library parts (exec.c build_pipeline; device.c: on with fast linking)
     bool map_placed, unmap_reserve;  // VK_EXT_map_memory_placed: driver memory mapped at a given address (exec.c guest_heap_dmabuf)
     bool heap_dmabuf_default;  // the heap as driver memory by default: RADV and Mesa's PanVK (device.c; LARECOMP_VK_HEAP_DMABUF overrides)
     bool cb_release;  // command buffers reset with RELEASE_RESOURCES before each begin: Arm's driver (device.c; LARECOMP_VK_CB_RELEASE)
