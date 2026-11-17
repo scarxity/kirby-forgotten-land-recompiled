@@ -3,7 +3,10 @@
 #include <shaderc/shaderc.h>
 #include <stdlib.h>
 #include <string.h>
+#include <dirent.h>
+#include <stdio.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 #include "shaders.h"
 
@@ -18,41 +21,133 @@ static shaderc_shader_kind kind_of(int stage) {
          : stage == STAGE_GEOMETRY ? shaderc_geometry_shader : shaderc_compute_shader;
 }
 
-// SPIR-V disk cache: cache/spirv/<hash of stage + source>.spv, so a known shader costs a file read instead of a
-// GLSL compile (the driver's pipeline cache only covers the step after this one).
+// SPIR-V disk cache: one file, cache/spirv.bin, of records {key: a hash of stage + source, words, SPIR-V}, and its
+// index (key -> offset) read at the first use, so a known shader costs one read instead of a GLSL compile (the
+// driver's pipeline cache only covers the step after this one). (It was a file per shader, cache/spirv/<key>.spv:
+// ~1.3 ms per open on Windows, and a scene's first frame loads ~800 of them; that folder is removed.)
 static uint64_t src_hash(const char *src, int stage) {
     uint64_t h = (0xcbf29ce484222325ull ^ (uint64_t)stage) + 3;  // + version of the post-processing (no_contraction)
     for (const char *p = src; *p; p++) { h ^= (uint8_t)*p; h *= 0x100000001B3ull; }
     return h;
 }
 
+#ifdef _WIN32
+#define spv_seek _fseeki64
+#define spv_tell _ftelli64
+#else
+#define spv_seek fseeko
+#define spv_tell ftello
+#endif
+#define SPV_FILE "cache/spirv.bin"
+#define SPV_MAGIC 0x31565053u  // "SPV1"
+typedef struct { uint64_t key; int64_t off; uint32_t n; } SpvAt;  // (off: of the words)
+static pthread_mutex_t spv_lk = PTHREAD_MUTEX_INITIALIZER;
+static FILE *spv_f;
+static int64_t spv_end;  // where the next record goes
+static bool spv_opened;
+static SpvAt *spv_at;
+static size_t spv_cap, spv_n;
+
+static void spv_put(uint64_t key, int64_t off, uint32_t n) {
+    if (spv_n * 2 >= spv_cap) {
+        SpvAt *was = spv_at;
+        size_t old = spv_cap;
+        spv_cap = spv_cap ? spv_cap * 2 : 8192;
+        spv_at = calloc(spv_cap, sizeof *spv_at);
+        spv_n = 0;
+        for (size_t i = 0; i < old; i++) if (was[i].key) spv_put(was[i].key, was[i].off, was[i].n);
+        free(was);
+    }
+    size_t i = key & (spv_cap - 1);
+    while (spv_at[i].key && spv_at[i].key != key) i = (i + 1) & (spv_cap - 1);
+    if (!spv_at[i].key) spv_n++;
+    spv_at[i] = (SpvAt){key, off, n};
+}
+
+static const SpvAt *spv_find(uint64_t key) {
+    if (!spv_cap || !key) return NULL;
+    for (size_t i = key & (spv_cap - 1); spv_at[i].key; i = (i + 1) & (spv_cap - 1))
+        if (spv_at[i].key == key) return &spv_at[i];
+    return NULL;
+}
+
+static void remove_old_folder(void) {
+    DIR *d = opendir("cache/spirv");
+    if (!d) return;
+    for (struct dirent *e; (e = readdir(d));) {
+        char path[300];
+        if (e->d_name[0] == '.') continue;
+        snprintf(path, sizeof path, "cache/spirv/%s", e->d_name);
+        remove(path);
+    }
+    closedir(d);
+    rmdir("cache/spirv");
+}
+
+static void spv_open(void) {  // (spv_lk)
+    spv_opened = true;
+    mkdir("cache", 0755);
+    remove_old_folder();
+    if (!(spv_f = fopen(SPV_FILE, "r+b")) && !(spv_f = fopen(SPV_FILE, "w+b"))) return;
+    uint32_t head[2];
+    bool ok = fread(head, sizeof head, 1, spv_f) == 1 && head[0] == SPV_MAGIC;
+    spv_end = sizeof head;
+    if (ok) {
+        spv_seek(spv_f, 0, SEEK_END);
+        int64_t size = spv_tell(spv_f);
+        for (int64_t at = spv_end; at + 16 <= size;) {
+            uint64_t rec[2];
+            spv_seek(spv_f, at, SEEK_SET);
+            if (fread(rec, sizeof rec, 1, spv_f) != 1) break;
+            uint32_t n = (uint32_t)rec[1];
+            if (!rec[0] || !n || at + 16 + (int64_t)n * 4 > size) break;  // (a record cut short: written over)
+            spv_put(rec[0], at + 16, n);
+            at += 16 + (int64_t)n * 4;
+            spv_end = at;
+        }
+    } else {
+        head[0] = SPV_MAGIC, head[1] = 0;
+        spv_seek(spv_f, 0, SEEK_SET);
+        fwrite(head, sizeof head, 1, spv_f);
+        fflush(spv_f);
+    }
+    LOG("[shader] SPIR-V on disk: %zu shaders\n", spv_n);
+}
+
 static uint32_t *cache_load(uint64_t h, size_t *nwords) {
-    char path[64];
-    snprintf(path, sizeof path, "cache/spirv/%016llx.spv", (unsigned long long)h);
-    FILE *f = fopen(path, "rb");
-    if (!f) return NULL;
-    fseek(f, 0, SEEK_END);
-    long n = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    uint32_t *d = n > 20 && n % 4 == 0 ? malloc((size_t)n) : NULL;
-    if (d && fread(d, 1, (size_t)n, f) != (size_t)n) { free(d); d = NULL; }
-    fclose(f);
-    if (d && d[0] != 0x07230203) { free(d); d = NULL; }
-    if (d) *nwords = (size_t)n / 4;
+    pthread_mutex_lock(&spv_lk);
+    if (!spv_opened) spv_open();
+    const SpvAt *found = spv_f ? spv_find(h) : NULL;
+    SpvAt at = found ? *found : (SpvAt){0};
+    pthread_mutex_unlock(&spv_lk);
+    // (read on this thread's own handle: a scene's first frame loads hundreds at once, ~1 ms each from disk, and one
+    // lock around the reads queued them all)
+    static __thread FILE *rf;
+    if (!at.key || (!rf && !(rf = fopen(SPV_FILE, "rb")))) return NULL;
+    uint32_t *d = malloc((size_t)at.n * 4);
+    if (spv_seek(rf, at.off, SEEK_SET) || fread(d, 4, at.n, rf) != at.n || d[0] != 0x07230203) free(d), d = NULL;
+    if (d) *nwords = at.n;
     return d;
 }
 
 static void cache_store(uint64_t h, const uint32_t *spv, size_t nwords) {
-    static int made;
-    if (!made) { made = 1; mkdir("cache", 0755); mkdir("cache/spirv", 0755); }
-    char path[64], tmp[80];
-    snprintf(path, sizeof path, "cache/spirv/%016llx.spv", (unsigned long long)h);
-    snprintf(tmp, sizeof tmp, "%s.%llx", path, (unsigned long long)(uintptr_t)&made ^ (unsigned long long)(uintptr_t)spv);
-    FILE *f = fopen(tmp, "wb");
-    if (!f) return;
-    bool ok = fwrite(spv, 4, nwords, f) == nwords;
-    fclose(f);
-    if (!ok || rename(tmp, path) != 0) remove(tmp);  // (another thread may have stored it first)
+    pthread_mutex_lock(&spv_lk);
+    if (!spv_opened) spv_open();
+    if (spv_f && h && !spv_find(h)) {
+        uint64_t rec[2] = {h, nwords};
+        bool ok = !spv_seek(spv_f, spv_end, SEEK_SET) && fwrite(rec, sizeof rec, 1, spv_f) == 1 && fwrite(spv, 4, nwords, spv_f) == nwords &&
+                  !fflush(spv_f);
+        if (ok) spv_put(h, spv_end + 16, (uint32_t)nwords), spv_end += 16 + (int64_t)nwords * 4;
+    }
+    pthread_mutex_unlock(&spv_lk);
+}
+
+static bool cache_have(uint64_t h) {
+    pthread_mutex_lock(&spv_lk);
+    if (!spv_opened) spv_open();
+    bool r = spv_find(h) != NULL;
+    pthread_mutex_unlock(&spv_lk);
+    return r;
 }
 
 // Vertex shaders: every float add/sub/mul/div/fma gets NoContraction, so no compiler fuses or splits them. Depth
@@ -140,12 +235,7 @@ uint64_t vk_spirv_key(const char *src, int stage) { return src_hash(src, stage) 
 
 uint32_t *vk_spirv_load(uint64_t key, size_t *nwords) { return spirv_nocache() ? NULL : cache_load(key, nwords); }
 
-bool vk_spirv_have(uint64_t key) {
-    char path[64];
-    snprintf(path, sizeof path, "cache/spirv/%016llx.spv", (unsigned long long)key);
-    struct stat st;
-    return !spirv_nocache() && stat(path, &st) == 0;
-}
+bool vk_spirv_have(uint64_t key) { return !spirv_nocache() && cache_have(key); }
 
 uint32_t *vk_glsl_to_spirv(const char *src, int stage, const char *name, size_t *nwords) {
     uint64_t h = vk_spirv_key(src, stage);

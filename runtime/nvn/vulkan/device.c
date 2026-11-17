@@ -434,6 +434,9 @@ static void *pipeline_cache_saver(void *a) {
         if (rq_stopping()) break;  // (quitting: backend_quit saves it)
         uint64_t now = SDL_GetTicks();
         if (now - last < 15000 || (vk_builds_pending() && now - last < 180000)) continue;
+        // (a cache the shader prepare step filled, 1.5 GB: kept at exit only. Writing it held pipeline builds for the
+        // whole save: frames held 1.5-1.8 s in play. What play adds to it after the prepare step is little)
+        if (pcache_saved > (256u << 20)) continue;
         vk_pipeline_cache_save();
         last = now;
     }

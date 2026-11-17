@@ -325,6 +325,21 @@ static void pair_add(uint64_t vs, uint64_t fs) {
     if (idx_npairs == idx_pairs_cap) idx_pairs = realloc(idx_pairs, (idx_pairs_cap = idx_pairs_cap ? idx_pairs_cap * 2 : 4096) * sizeof *idx_pairs);
     idx_pairs[idx_npairs++] = (IdxPair){vs, fs};
 }
+static uint32_t rd32(const uint8_t *d, size_t o) { uint32_t v; memcpy(&v, d + o, 4); return v; }
+static uint64_t rd64(const uint8_t *d, size_t o) { uint64_t v; memcpy(&v, d + o, 8); return v; }
+// Every compute shader, with its workgroup size (control +0x748, as the dispatch reads it): .vs the code hash, .fs
+// the size packed x | y << 21 | z << 42. (Not prepared, a compute pipeline took 0.7-1.6 s at its first dispatch.)
+static IdxPair *idx_cs;
+static size_t idx_ncs, idx_cs_cap;
+static void cs_add(uint64_t h, const uint8_t *ctl) {
+    uint64_t packed = 0;
+    for (int i = 0; i < 3; i++) {
+        uint32_t l = rd32(ctl, 0x748 + 4 * (size_t)i);
+        packed |= (uint64_t)(l ? l & 0x1FFFFF : 1) << (21 * i);
+    }
+    if (idx_ncs == idx_cs_cap) idx_cs = realloc(idx_cs, (idx_cs_cap = idx_cs_cap ? idx_cs_cap * 2 : 256) * sizeof *idx_cs);
+    idx_cs[idx_ncs++] = (IdxPair){h, packed};
+}
 static int pair_cmp(const void *a, const void *b) {
     const IdxPair *x = a, *y = b;
     return x->vs != y->vs ? (x->vs < y->vs ? -1 : 1) : x->fs != y->fs ? (x->fs < y->fs ? -1 : 1) : 0;
@@ -337,8 +352,6 @@ static const IdxEnt *idx_find(uint64_t h) {
     return NULL;
 }
 
-static uint32_t rd32(const uint8_t *d, size_t o) { uint32_t v; memcpy(&v, d + o, 4); return v; }
-static uint64_t rd64(const uint8_t *d, size_t o) { uint64_t v; memcpy(&v, d + o, 8); return v; }
 
 // Code offsets seen in the current file
 static uint64_t *off_tab;
@@ -396,6 +409,7 @@ static void idx_bnsh(const uint8_t *d, size_t n, size_t b, uint32_t file) {
             if (off_add(b + pcode)) idx_add(hs[s], file, (uint32_t)(b + pcode), len, coff, cs);  // (variations share code)
         }
         if (hs[0] && hs[4] && !hs[1] && !hs[2] && !hs[3]) pair_add(hs[0], hs[4]);  // (slots: VS, HS, DS, GS, PS, CS)
+        if (hs[5]) cs_add(hs[5], d + b + rd64(d, b + rd64(d, b + pbin + 8 + 8 * 5) + 8));  // (its control section, checked above)
     }
 }
 
@@ -667,6 +681,7 @@ static bool prep_run_locked(const char *romfs, void (*progress)(int done, int to
         if (!own) nshipped = nwork;
     }
     char *gen = NULL;  // (every program of the game files: one record each, the draw state a plain float target's)
+    char *cs_gen = NULL;  // (and every compute shader of them)
     if (all && idx_npairs) {
         qsort(idx_pairs, idx_npairs, sizeof *idx_pairs, pair_cmp);
         extern uint32_t nvn_window_origin(void), nvn_depth_mode(void);
@@ -706,7 +721,21 @@ static bool prep_run_locked(const char *romfs, void (*progress)(int done, int to
         }
         for (int f = 0; f < idx_nfiles; f++) if (gfiles[f]) fclose(gfiles[f]);
         free(gfiles);
-        LOG("[shader] every program of the game files: %d, %d of them also with an integer last target\n", ngen, nint);
+        qsort(idx_cs, idx_ncs, sizeof *idx_cs, pair_cmp);
+        cs_gen = malloc(idx_ncs * 64 + 1);
+        size_t cat = 0;
+        int ncs = 0;
+        for (size_t i = 0; i < idx_ncs; i++) {
+            if (i && !pair_cmp(&idx_cs[i], &idx_cs[i - 1])) continue;
+            ShaderRec c = {.kind = 'C', .vs = idx_cs[i].vs};
+            for (int k = 0; k < 3; k++) c.local[k] = (uint32_t)(idx_cs[i].fs >> (21 * k)) & 0x1FFFFF;
+            shader_rec_format(&c, cs_gen + cat, 64);
+            if (nwork == cap) work = realloc(work, (size_t)(cap = cap ? cap * 2 : 1024) * sizeof *work);
+            work[nwork++] = cs_gen + cat;
+            cat += strlen(cs_gen + cat) + 1;
+            ncs++;
+        }
+        LOG("[shader] every program of the game files: %d, %d of them also with an integer last target; %d compute\n", ngen, nint, ncs);
     }
     // done - pending moves both ways a little (builds finish on other threads): the count shown only goes up, and
     // never past the total
@@ -739,6 +768,7 @@ static bool prep_run_locked(const char *romfs, void (*progress)(int done, int to
 #undef PREP_REPORT
     free(work);
     free(gen);
+    free(cs_gen);
     for (int i = 0; i < idx_nfiles; i++) if (files[i]) fclose(files[i]);
     free(files);
     free(list);
@@ -748,10 +778,25 @@ static bool prep_run_locked(const char *romfs, void (*progress)(int done, int to
     return true;
 }
 
+static void prep_step_progress(int done, int total) {
+    static int last = -1;
+    int permille = total ? (int)((int64_t)done * 1000 / total) : 0;
+    if (permille == last) return;
+    last = permille;
+    printf("phase shaders %.3f %d/%d\n", permille / 1000.0, done, total);
+    fflush(stdout);
+}
+
 void shader_prep_boot(const char *romfs) {
     const char *e = getenv("LARECOMP_SHADER_PREP");
     if (!e || !atoi(e)) return;
-    shader_prep_run(romfs, NULL, NULL);
-    // (the launcher's prepare step: a normal exit, so the driver writes what it compiled to its disk cache)
-    if (getenv("LARECOMP_SHADER_PREP_EXIT")) exit(0);
+    // LARECOMP_SHADER_PREP_EXIT=1: the launcher's "Preparing shaders" step. Progress lines on stdout ("phase shaders
+    // <fraction>", as runtime/setup_cli.c prints its phases), then "done" and a normal exit
+    bool step = getenv("LARECOMP_SHADER_PREP_EXIT") != NULL;
+    shader_prep_run(romfs, step ? prep_step_progress : NULL, NULL);
+    if (step) {
+        printf("done\n");
+        fflush(stdout);
+        exit(0);
+    }
 }

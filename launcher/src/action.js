@@ -1,4 +1,4 @@
-export const BUSY_PHASES = ['runtime', 'files', 'translate', 'compile'];
+export const BUSY_PHASES = ['runtime', 'files', 'translate', 'compile', 'shaders'];
 
 // The one thing the big button does next, from the backend status. Pure, so it can be tested without a window.
 export function primaryAction(s) {
@@ -13,8 +13,11 @@ export function primaryAction(s) {
   if (s.game_error) return { label: 'Select game folder', act: 'pick', detail: s.game_error };
   if (s.tools_missing.length && !s.built) return { label: 'Set up', act: 'go-setup', detail: toolsMissing(s) };
   if (!s.built) return { label: 'Set up', act: 'setup', detail: s.phase === 'failed' ? s.error : '' };
+  if (s.shaders_ready === false) return { label: 'Play', act: 'play', detail: SHADERS_NOTE };
   return { label: 'Play', act: 'play' };
 }
+
+export const SHADERS_NOTE = 'Play prepares the shaders first, about 8 minutes, so nothing is compiled while you play. It happens again only after a graphics driver or mod change.';
 
 export const REBUILD_NOTE = 'The game code was built by another version of this program. Build it again to play. It takes about 7 minutes on a 16-thread PC.';
 
@@ -30,6 +33,7 @@ export const PHASE_LABEL = {
   files: 'Preparing the game files',
   translate: 'Translating the game code',
   compile: 'Compiling the game code',
+  shaders: 'Preparing shaders',
 };
 
 // Mods are read when the game starts and the mods folder may be in use by the setup: leave them alone meanwhile.
