@@ -673,19 +673,40 @@ static bool prep_run_locked(const char *romfs, void (*progress)(int done, int to
         ShaderRec r = {.kind = 'G', .ncolor = 1, .samples = 1, .channel_mask = 0xF, .topo = 2, .poly_fill = 1};
         r.color[0] = 0x38;
         r.flags = (nvn_window_origin() == 0 ? SR_FLIP_Y : 0) | (nvn_depth_mode() == 0 ? SR_DEPTH_MINUS_ONE : 0) | SR_WARM;
-        gen = malloc(idx_npairs * 512);
+        gen = malloc(idx_npairs * 1024);
         size_t at = 0;
-        int ngen = 0;
+        int ngen = 0, nint = 0;
+        FILE **gfiles = calloc((size_t)idx_nfiles + 1, sizeof *gfiles);
         for (size_t i = 0; i < idx_npairs; i++) {
             if (i && !pair_cmp(&idx_pairs[i], &idx_pairs[i - 1])) continue;
-            r.vs = idx_pairs[i].vs, r.fs = idx_pairs[i].fs;
-            shader_rec_format(&r, gen + at, 512);
-            if (nwork == cap) work = realloc(work, (size_t)(cap = cap ? cap * 2 : 1024) * sizeof *work);
-            work[nwork++] = gen + at;
-            at += strlen(gen + at) + 1;
+            ShaderRec v = r;
+            v.vs = idx_pairs[i].vs, v.fs = idx_pairs[i].fs;
+            // A fragment shader writing several targets is built a second time with its last one an unsigned integer
+            // target: a target's kind changes the program (translate.c), and a G-buffer's last target is often an
+            // integer one (KFL: 287 of the 294 programs the plain build missed in the first stage)
+            ShaderBlob b;
+            uint8_t *d = blob_read(idx_find(v.fs), &b, gfiles);
+            uint32_t omap = 0;
+            if (d && b.size >= 0x80) memcpy(&omap, d + 0x30 + 0x48, 4);
+            free(d);
+            int last = -1, written = 0;
+            for (int rt = 0; rt < 8; rt++) if ((omap >> (rt * 4)) & 0xF) last = rt, written++;
+            for (int k = 0; k < (written >= 2 ? 2 : 1); k++) {
+                if (k) {
+                    v.ncolor = (uint8_t)(last + 1);
+                    for (int rt = 0; rt <= last; rt++) v.color[rt] = rt == last ? 0x03 : 0x38;
+                    nint++;
+                }
+                shader_rec_format(&v, gen + at, 512);
+                if (nwork == cap) work = realloc(work, (size_t)(cap = cap ? cap * 2 : 1024) * sizeof *work);
+                work[nwork++] = gen + at;
+                at += strlen(gen + at) + 1;
+            }
             ngen++;
         }
-        LOG("[shader] every program of the game files: %d\n", ngen);
+        for (int f = 0; f < idx_nfiles; f++) if (gfiles[f]) fclose(gfiles[f]);
+        free(gfiles);
+        LOG("[shader] every program of the game files: %d, %d of them also with an integer last target\n", ngen, nint);
     }
     // done - pending moves both ways a little (builds finish on other threads): the count shown only goes up, and
     // never past the total

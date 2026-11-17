@@ -2224,6 +2224,15 @@ static void prep_put(PrepEnt **t, size_t *cap, size_t *n, uint64_t key, void *ob
 #define PREP_GET(tab, key) ({ pthread_mutex_lock(&prep_lock); void *o_ = prep_get(tab, tab##_cap, key); pthread_mutex_unlock(&prep_lock); o_; })
 #define PREP_PUT(tab, key, obj) do { pthread_mutex_lock(&prep_lock); prep_put(&tab, &tab##_cap, &tab##_n, key, obj); pthread_mutex_unlock(&prep_lock); } while (0)
 
+// The kinds of the targets the fragment shader writes only (its header's output map, as the translator reads it):
+// a target it doesn't write gets no output in the code, so its kind can't change the program (translate.c). A draw
+// into a target set with an integer target it doesn't write then finds the program built for plain targets.
+static void rt_kinds_written(ShaderKey *fkey, const uint8_t *fs_code) {
+    uint32_t omap;
+    memcpy(&omap, fs_code + 0x30 + 0x48, 4);
+    for (int rt = 0; rt < 8; rt++) if (!((omap >> (rt * 4)) & 0xF)) fkey->rt_kind[rt] = 0;
+}
+
 static uint64_t prog_content_key(uint64_t vh, uint64_t fh, const ShaderKey *vkey, const ShaderKey *fkey) {
     uint64_t h = 0xcbf29ce484222325ull;
     const uint64_t c[2] = {vh, fh};
@@ -6378,6 +6387,7 @@ bool renderer_prepare(const ShaderRec *r, const ShaderBlob *vsb, const ShaderBlo
     vkey.flip_x = fkey.flip_x = (r->flags & SR_FLIP_X) != 0;
     for (int i = 0; i < r->nattrib; i++) vkey.attr_kind[i] = (uint8_t)attr_kind(r->attrib[i] & 0xFF);
     for (int i = 0; i < r->ncolor && i < 8; i++) if (r->color[i]) fkey.rt_kind[i] = (uint8_t)rt_kind(r->color[i]);
+    rt_kinds_written(&fkey, fsb->code);
     uint64_t ck = prog_content_key(r->vs, r->fs, &vkey, &fkey);
     Prog *p = PREP_GET(prep_progs, ck);
     if (!p) {
@@ -6755,6 +6765,7 @@ static void draw_(CmdRec *r, bool indexed) {
     vkey.depth_minus_one = nvn_depth_mode() == 0;
     for (int i = 0; i < st.nattrib; i++) vkey.attr_kind[i] = (uint8_t)attr_kind(st.attrib[i] & 0xFF);
     for (int i = 0; i < st.rt.ncolor; i++) if (st.rt.color[i]) fkey.rt_kind[i] = (uint8_t)rt_kind(st.rt.color[i]->format);
+    if (st.program->stages[1].code_addr) rt_kinds_written(&fkey, (const uint8_t *)(uintptr_t)st.program->stages[1].code_addr);
     Prog *pr = get_program(st.program, &vkey, &fkey);
     if (pr && atomic_load(&pr->state) == 1) {  // (fragment textures bound to integer views: the program made for them)
         for (int i = 0; i < pr->fi->ntex && i < 64; i++) {
