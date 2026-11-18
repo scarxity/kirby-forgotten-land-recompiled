@@ -23,6 +23,9 @@ Unzip over 0.3.0: the game code from 0.3.0 is used as it is; the first Play prep
 ### Changed
 - No "Preparing graphics for this area... (first visit only)" box over the game any more
 - Frame Generation is in the game's menu under Experimental (off by default)
+- Quit in the game's menu closes the game, back to the launcher you started it from: no "Return to Launcher", which
+  opened a second, older start screen in the game's window. Started on its own, ForgottenLandRecomp.exe opens the
+  launcher
 - The shader caches are files of their own (`cache/spirv.bin`, compressed, and `cache/translations.bin`) instead of
   tens of thousands of small files; the old `cache/spirv` folder is removed. The graphics driver's own shader cache is
   not used where the driver allows it (`LARECOMP_VK_DRIVER_CACHE=1` uses it): it is capped, and once full it kept
@@ -43,6 +46,8 @@ Unzip over 0.3.0: the game code from 0.3.0 is used as it is; the first Play prep
 ### Known issues
 - As 0.3.0, and: Intel GPUs are untested on 0.3.x ([#12](https://github.com/scarxity/kirby-forgotten-land-recompiled/issues/12)
   was reported on 0.2.0). Frame Generation (in the game's menu) is still untested
+- The small guide video at the bottom right in the first stage was reported black on one PC with Frame Generation on.
+  It plays in every test run, with Frame Generation too; if you see it, turning Frame Generation off is worth a try
 
 ## 0.3.0
 

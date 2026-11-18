@@ -872,8 +872,8 @@ static void tab_audio(void) {
 extern "C" void rt_request_reboot(int kind);  // runtime/main.c (rt.h's RT_REBOOT_GAME / RT_REBOOT_TITLE)
 
 // Reset and Quit (the bar's entries): a question over the bar, as Reset to vanilla's (user 2026-11-03). Reset: the game
-// boots again (the intro movie). Quit: back to the start screen ("Return to Launcher") or out to the desktop. B / Esc
-// is Cancel, where the cursor starts.
+// boots again (the intro movie). Quit: the game closes (the launcher that started it is still open). B / Esc is
+// Cancel, where the cursor starts.
 static void ask_popup(float scale) {
     if (g_ask >= 0 && !ImGui::IsPopupOpen("##ask")) ImGui::OpenPopup("##ask");
     ImGui::SetNextWindowPos(ImVec2(ImGui::GetIO().DisplaySize.x * 0.5f, ImGui::GetIO().DisplaySize.y * 0.5f),
@@ -882,12 +882,11 @@ static void ask_popup(float scale) {
                                                    ImGuiWindowFlags_NoMove))
         return;
     bool quit = g_ask == BAR_QUIT;
-    // LARECOMP_MENU_ASK=cancel / launcher / reset (test): presses that button a few frames after the question opens
+    // LARECOMP_MENU_ASK=cancel / reset (test): presses that button a few frames after the question opens
     static const char *test = getenv("LARECOMP_MENU_ASK");
     static int frames;
     frames++;
     bool test_cancel = test && frames == 30 && !strcmp(test, "cancel");
-    bool test_launcher = test && frames == 30 && !strcmp(test, "launcher");
     bool test_reset = test && frames == 30 && !strcmp(test, "reset");
     ImGui::PushFont(g_menu_font_big);
     ImGui::TextColored(plastic_col(plastic_theme().title), "%s", quit ? L("Quit") : L("Reset Game"));
@@ -896,8 +895,8 @@ static void ask_popup(float scale) {
     ImGui::TextUnformatted(L("Progress since your last save is lost."));
     ImGui::Spacing();
     ImGui::Spacing();
-    ImVec2 bs(260 * scale, 0);  // (all one width: the longest label's, "Return to Launcher" ran past its button)
-    for (const char *s : {L("Cancel"), L("Reset"), L("Return to Launcher"), L("Quit")})
+    ImVec2 bs(260 * scale, 0);  // (all one width: the longest label's)
+    for (const char *s : {L("Cancel"), L("Reset"), L("Quit")})
         bs.x = fmaxf(bs.x, ImGui::CalcTextSize(s).x + 2 * ImGui::GetStyle().FramePadding.x + 16 * scale);
     bool done = false;
     if (ImGui::Button(L("Cancel"), bs) || ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) ||
@@ -916,14 +915,6 @@ static void ask_popup(float scale) {
             set_open(false);
         }
     } else {
-        ImGui::SameLine();
-        if (ImGui::Button(L("Return to Launcher"), bs) || test_launcher) {
-            LOG("[menu] quit: back to the start screen\n");
-            settings_save();
-            rt_request_reboot(RT_REBOOT_TITLE);
-            done = true;
-            set_open(false);
-        }
 #if !PLAT_TOUCH  // (phone apps don't quit themselves)
         ImGui::SameLine();
         if (ImGui::Button(L("Quit"), bs)) {

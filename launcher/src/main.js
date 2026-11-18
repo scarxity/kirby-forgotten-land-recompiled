@@ -161,7 +161,7 @@ const views = {
       <h1>About</h1>
       <section class="card glass">
         <p>A static recompilation of the game's code into a native program, built on your PC from your own copy. It is not an emulator and it ships no game files, keys or dumping tools.</p>
-        <p>Built on letsgo-recomp and LAS Recomp (MIT). Not affiliated with Nintendo or HAL Laboratory.</p>
+        <p>Built on open-source recompilation projects (MIT): their licences are in the licenses folder. Not affiliated with Nintendo or HAL Laboratory.</p>
         <p>Work folder: <code>${esc(s.work)}</code></p>
         <div class="row">
           <button class="btn" data-act="open-work">Open work folder</button>

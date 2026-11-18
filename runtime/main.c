@@ -374,6 +374,10 @@ int main(int argc, char **argv) {
             fprintf(stderr, "[main] LARECOMP_NO_LAUNCHER is set: not showing the start screen - exiting\n");
             exit(3);
         }
+#ifdef _WIN32
+        extern bool plat_open_own_launcher(void);
+        if (title && plat_open_own_launcher()) exit(0);  // (runtime/platform/windows.c)
+#endif
         if (title) {  // start screen (runtime/ui/launcher.mm): game files setup, seed choice, settings
             extern void launcher_run(const char *root);
             launcher_run(root);
