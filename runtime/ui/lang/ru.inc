@@ -418,8 +418,6 @@
 {"Some of the game's files are missing, usually from a copy or unzip that stopped partway. Copy them again and choose the folder again.", "Некоторых файлов игры не хватает. Обычно так бывает, если копирование или распаковка прервались. Скопируйте их заново и снова выберите папку."},
 {"Make sure there's about 2 GB free and try again. If it keeps happening, report it on GitHub.", "Освободите около 2 ГБ и попробуйте снова. Если ошибка повторяется, сообщите о ней на GitHub."},
 {"Preparing shaders", "Подготовка шейдеров"},
-{"Preparing graphics for this area... (first visit only)", "Подготовка графики для этого места... (только при первом посещении)"},
-{"%d of %d", "%d из %d"},
 {"Build cancelled. The finished parts are kept, so you can resume later.", "Сборка отменена. Готовые части сохранены, ее можно продолжить позже."},
 {"Copying the game files...", "Копирование файлов игры..."},
 {"Looking for the game files...", "Поиск файлов игры..."},

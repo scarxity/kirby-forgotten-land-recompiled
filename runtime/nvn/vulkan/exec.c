@@ -929,7 +929,7 @@ typedef struct Job { void (*fn)(void *); void *arg; struct Job *next; } Job;
 static Job *jobs_head, *jobs_tail;
 static pthread_mutex_t jobs_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t jobs_cond = PTHREAD_COND_INITIALIZER;
-static _Atomic int jobs_pending, jobs_done;  // translations and builds queued or running; finished ever (vk_build_hold)
+static _Atomic int jobs_pending;  // translations and builds queued or running
 int vk_builds_pending(void) { return atomic_load(&jobs_pending); }  // (device.c: the pipeline cache saved after a burst)
 
 static void *worker(void *a) {
@@ -944,7 +944,6 @@ static void *worker(void *a) {
         pthread_mutex_unlock(&jobs_lock);
         j->fn(j->arg);
         free(j);
-        atomic_fetch_add(&jobs_done, 1);
         atomic_fetch_sub(&jobs_pending, 1);
     }
     return NULL;
@@ -974,7 +973,6 @@ static void *translator(void *a) {
         pthread_mutex_unlock(&tjobs_lock);
         j->fn(j->arg);
         free(j);
-        atomic_fetch_add(&jobs_done, 1);
         atomic_fetch_sub(&jobs_pending, 1);
     }
     return NULL;
@@ -1119,12 +1117,11 @@ static void skip_note(int why, bool compute) {
     }
     skip_top[j].n++;
 }
-static uint64_t cum_build_skips, cum_skips;  // skipped for a build still running / for any reason, never reset (vk_build_hold)
+static uint64_t cum_build_skips;  // skipped for a build still running, never reset
 static uint64_t stat_skipped_held;  // of stat_skipped, those in frames vk_build_hold kept off the screen
-static uint64_t stat_skipped_late;  // of stat_skipped, those vk_build_hold showed late (their builds still running)
-#define SKIP(why) do { int w_ = (why); stat_skipped++, cum_skips++; cum_build_skips += w_ == SK_PROG_BUILDING || w_ == SK_PIPE_BUILDING; \
+#define SKIP(why) do { int w_ = (why); stat_skipped++; cum_build_skips += w_ == SK_PROG_BUILDING || w_ == SK_PIPE_BUILDING; \
                        if (log_skips) skip_note(w_, false); } while (0)
-#define SKIP_CS(why) do { int w_ = (why); stat_skipped++, cum_skips++; cum_build_skips += w_ == SK_CS_BUILDING; \
+#define SKIP_CS(why) do { int w_ = (why); stat_skipped++; cum_build_skips += w_ == SK_CS_BUILDING; \
                           if (log_skips) skip_note(w_, true); } while (0)
 static void skip_log(void) {
     if (log_skips <= 0) return;
@@ -1189,59 +1186,35 @@ static void builds_check(void) {
     pthread_mutex_unlock(&builds_lock);
 }
 
-// At each present (device.c, the render thread). A frame with a draw or dispatch skipped because its program or
-// pipeline is still being built is not shown: the render thread waits here for the builds, up to 10 s a frame, so the
-// game waits with it, and the window keeps the last frame shown. Skipping instead, 2 cores with a cold driver cache
-// showed a black screen for half a minute and more while the game played on (a fifth of the draws missing was enough
-// for black: the lighting pass), and an effect seen for the first time popped in a few frames late, after the stage
-// had started (a boss's attacks: hundreds of draws a stage in the tour). begin(): a run of held frames starts.
-// notice(done, total): from a second into the run, 4 times a second, the builds finished since it started of those
-// plus the rest.
-// A frame with only a few draws waiting (fewer than HOLD_FULL_DRAWS: a new effect or object, not a new area) is held
-// at most LARECOMP_HOLD_SMALL_MS (33) and then shown without them: each such build is a new shader for the driver,
-// 20 to 140 ms, and holding every one stuttered on any PC (issue #14). With a cold cache on the 3-stage tour (median of
-// 3 runs) holds of 50 ms or more outside area entry went 36 -> 12; about 60 frames a run show ~5 draws a frame late,
-// none by more than a frame and none dark (they come with the stage's fade-in).
-#define HOLD_FULL_DRAWS 16
-bool vk_build_hold(void (*begin)(void), void (*notice)(int done, int total)) {
-    static uint64_t l_draws, l_skips, l_all, since;  // since: the run's first held frame (0: the last frame was shown)
-    static int done0;
-    uint64_t drawn = cum_draws - l_draws, skipped = cum_build_skips - l_skips;
-    int jobs = atomic_load(&jobs_pending);
-    bool hold = skipped > 0;
-    static int64_t small_ms = -1;
-    if (small_ms < 0) small_ms = getenv("LARECOMP_HOLD_SMALL_MS") ? atoll(getenv("LARECOMP_HOLD_SMALL_MS")) : 33;
-    bool small = hold && skipped < HOLD_FULL_DRAWS;
-    if (hold) {
-        uint64_t t0 = SDL_GetTicksNS(), painted = 0;
-        uint64_t limit = small ? (uint64_t)small_ms * 1000000ull : 10000000000ull;
-        if (!since && !small) {
-            since = t0, done0 = atomic_load(&jobs_done);
-            if (begin) begin();
-        }
-        while (atomic_load(&jobs_pending) > 0 && SDL_GetTicksNS() - t0 < limit) {
-            uint64_t now = SDL_GetTicksNS();
-            if (notice && now - since > 1000000000ull && now - painted >= 250000000ull) {
-                painted = now;
-                int done = atomic_load(&jobs_done) - done0;
-                notice(done, done + atomic_load(&jobs_pending));
-            }
-            SDL_DelayNS(1000000);
-        }
+// At each present (device.c, the render thread): a frame with a draw or dispatch skipped because its program or
+// pipeline was still being built is not shown. The render thread waits for the builds (up to 10 s), the game with it,
+// and the window keeps the last frame shown. Every program of the game files is built before play (shader_prep.c,
+// once a driver), so a wait here is rare and short. Nothing is drawn over the picture and no frame is shown with draws
+// missing: 0.3.1's "Preparing graphics" box over play read as a debug message, and 0.2.0's frames with draws missing
+// popped in and, on slow PCs, stayed dark.
+bool vk_build_hold(void) {
+    static uint64_t seen;
+    uint64_t waiting = cum_build_skips - seen;
+    if (waiting) {
+        uint64_t t0 = SDL_GetTicksNS();
+        int jobs = atomic_load(&jobs_pending);
+        while (atomic_load(&jobs_pending) > 0 && SDL_GetTicksNS() - t0 < 10000000000ull) SDL_DelayNS(1000000);
         static int nlog;
-        if (nlog++ < 200)
-            LOG("[vk] frame held %.0f ms for %d shader / pipeline builds (%llu draws waiting, %llu drawn)\n",
-                (SDL_GetTicksNS() - t0) / 1e6, jobs, (unsigned long long)skipped, (unsigned long long)drawn);
-        if (small && atomic_load(&jobs_pending) > 0) {
-            hold = false;
-            stat_skipped_late += skipped;
-            if (nlog < 200) LOG("[vk] frame shown after %.0f ms with %llu draws missing\n", (SDL_GetTicksNS() - t0) / 1e6,
-                                (unsigned long long)skipped);
-        } else stat_skipped_held += cum_skips - l_all;
+        if (nlog++ < 200) {
+            extern void slow_build_totals(uint64_t v[6]);
+            static uint64_t was[6];
+            uint64_t v[6];
+            slow_build_totals(v);
+            LOG("[vk] frame held %.0f ms for %d shader / pipeline builds (%llu draws waiting); since the last: %llu translated "
+                "%.0f ms, %llu compiled %.0f ms, %llu pipelines %.0f ms (thread time)\n", (SDL_GetTicksNS() - t0) / 1e6, jobs,
+                (unsigned long long)waiting, (unsigned long long)(v[0] - was[0]), (v[1] - was[1]) / 1e6,
+                (unsigned long long)(v[2] - was[2]), (v[3] - was[3]) / 1e6, (unsigned long long)(v[4] - was[4]), (v[5] - was[5]) / 1e6);
+            memcpy(was, v, sizeof was);
+        }
+        stat_skipped_held += waiting;
     }
-    if (!hold) since = 0;
-    l_draws = cum_draws, l_skips = cum_build_skips, l_all = cum_skips;
-    return hold;
+    seen = cum_build_skips;
+    return waiting != 0;
 }
 
 const char *renderer_stats(void) {
@@ -1256,10 +1229,10 @@ const char *renderer_stats(void) {
     int compiles = atomic_exchange(&stat_compiles, 0);
     hud_compiles += (uint64_t)compiles;
     snprintf(stats_text, sizeof stats_text,
-             "%llu draws, %llu skipped (%llu in held frames, %llu late), %llu passes, %llu dispatches, %llu flushes, wait %.0fms, compile %d, "
+             "%llu draws, %llu skipped (%llu in held frames), %llu passes, %llu dispatches, %llu flushes, wait %.0fms, compile %d, "
              "fbcopy %llu, upload %.1fMB, deferred %llu, snap %lluKB/%llu",
-             (unsigned long long)stat_draws, (unsigned long long)stat_skipped, (unsigned long long)stat_skipped_held,
-             (unsigned long long)stat_skipped_late, (unsigned long long)stat_passes,
+             (unsigned long long)stat_draws, (unsigned long long)stat_skipped,
+             (unsigned long long)stat_skipped_held, (unsigned long long)stat_passes,
              (unsigned long long)stat_dispatches, (unsigned long long)stat_flushes, (double)stat_wait_ns / 1e6,
              compiles, (unsigned long long)stat_feedback_copies, (double)stat_upload_bytes / 1048576.0,
              (unsigned long long)__atomic_exchange_n(&stat_deferred, 0, __ATOMIC_RELAXED), (unsigned long long)(stat_snap_bytes >> 10),
@@ -1379,7 +1352,7 @@ const char *renderer_stats(void) {
         prof_exec = prof_draw = prof_sets = prof_vtx = prof_submit = prof_pre = prof_key = prof_dyn = prof_tex = prof_up = prof_gpu = 0;
     }
     hud_draws += stat_draws, hud_passes += stat_passes, hud_dispatches += stat_dispatches;  // (renderer_hud's totals)
-    stat_draws = stat_skipped = stat_skipped_held = stat_skipped_late = stat_passes = stat_dispatches = stat_flushes = stat_wait_ns = 0;
+    stat_draws = stat_skipped = stat_skipped_held = stat_passes = stat_dispatches = stat_flushes = stat_wait_ns = 0;
     return stats_text;
 }
 
@@ -2006,6 +1979,8 @@ typedef struct {
     VkDescriptorSetLayout set_layout[4];  // [2] (compute: [1]): the heap chunk set (gmem_chunk_layout; with a geometry
                                           // stage and no heap: empty); [3]: the geometry stage's
     VkPipelineLayout layout;
+    uint64_t spv_key[3];  // a stage whose translation came from the cache (tr_translate, its msl NULL): its SPIR-V's
+                          // cache key; [0] vertex, [1] fragment, [2] geometry
     bool vs_uses_vid;
     bool vs_only;       // a vertex stage alone (the blend shape pass: global memory stores): an empty fragment stage and
                         // pipelines with rasterizer discard
@@ -2083,7 +2058,7 @@ static VkPipelineLayout make_layout(Prog *p, int nsets, VkShaderStageFlags s0, V
 }
 
 static void save_glsl(const char *src, uint64_t addr, const char *suffix) {
-    if (!getenv("LARECOMP_SAVE_MSL")) return;
+    if (!src || !getenv("LARECOMP_SAVE_MSL")) return;  // (src NULL: translated before, tr_translate)
     mkdir("build/glsl", 0755);
     char path[256];
     snprintf(path, sizeof path, "build/glsl/%llx_%s.glsl", (unsigned long long)addr, suffix);
@@ -2128,15 +2103,17 @@ static bool spirv_strip_early_tests(uint32_t *w, size_t *nwords) {
     return false;
 }
 
+static uint64_t hash_words(uint64_t h, const void *p, size_t n);
 static void compile_program(void *arg) {
     Prog *p = arg;
     uint64_t t0 = SDL_GetTicksNS();
     int bs = build_begin("modules vs/fs", p->code[0] ? p->code[0] : p->prep_vh, p->code[1] ? p->code[1] : p->prep_fh);
     size_t nv = 0, nf = 0;
-    uint32_t *sv = vk_glsl_to_spirv(p->vi->msl, STAGE_VERTEX, "vs", &nv);
-    uint32_t *sf = sv ? vk_glsl_to_spirv(p->fi->msl, STAGE_FRAGMENT, "fs", &nf) : NULL;
+    uint32_t *sv = p->vi->msl ? vk_glsl_to_spirv(p->vi->msl, STAGE_VERTEX, "vs", &nv) : vk_spirv_load(p->spv_key[0], &nv);
+    uint32_t *sf = !sv ? NULL : p->fi->msl ? vk_glsl_to_spirv(p->fi->msl, STAGE_FRAGMENT, "fs", &nf) : vk_spirv_load(p->spv_key[1], &nf);
     size_t ng = 0;
-    uint32_t *sg = sf && p->gi ? vk_glsl_to_spirv(p->gi->msl, STAGE_GEOMETRY, "gs", &ng) : NULL;
+    uint32_t *sg = !sf || !p->gi ? NULL : p->gi->msl ? vk_glsl_to_spirv(p->gi->msl, STAGE_GEOMETRY, "gs", &ng)
+                                                     : vk_spirv_load(p->spv_key[2], &ng);
     if (!sv || !sf || (p->gi && !sg)) { free(sv); free(sf); free(sg); atomic_store(&p->state, 2); build_end(bs); return; }
     p->nbinds = vk_reflect(sv, nv, p->binds, MAX_BIND);
     p->nbinds += vk_reflect(sf, nf, p->binds + p->nbinds, MAX_BIND - p->nbinds);
@@ -2148,6 +2125,10 @@ static void compile_program(void *arg) {
     free(sv);
     free(sf);
     free(sg);
+    // (the GLSL text is read only up to here; the pre-build keeps tens of thousands of programs)
+    free(p->vi->msl), p->vi->msl = NULL;
+    free(p->fi->msl), p->fi->msl = NULL;
+    if (p->gi) free(p->gi->msl), p->gi->msl = NULL;
     mark_dynamic(p);
     p->layout = make_layout(p, 2, VK_SHADER_STAGE_VERTEX_BIT, VK_SHADER_STAGE_FRAGMENT_BIT);
     atomic_fetch_add(&stat_compiles, 1);
@@ -2158,6 +2139,123 @@ static void compile_program(void *arg) {
     build_end(bs);
     slow_build(t0, "modules vs/fs", p->code[0], p->code[1]);
 }
+
+// ---- translations kept on disk (cache/translations.bin)
+// The translator runs one shader at a time (translate_lock), and a scene's first frames meet hundreds of programs:
+// translating them held the first stage's first frame 750 ms although the shader prepare step had translated them
+// all (in its own process). A record: the hash of everything the translation reads, the ShaderInfo without its text,
+// and the text's SPIR-V cache key (shaders.c), which compile_program loads. The file's header names this build:
+// another build's translations start a new file.
+#define TR_FILE "cache/translations.bin"
+#define TR_MAGIC 0x3152544cu  // "LTR1"
+typedef struct {
+    uint64_t in, spv;
+    bool vid;  // (vertex) reads gl_VertexIndex
+    ShaderInfo si;
+} TrRec;
+static TrRec *tr_recs;     // (translate_lock) open addressing by in (0: empty)
+static size_t tr_cap, tr_n;
+static FILE *tr_out;
+static int tr_state;       // 0 not opened, 1 on, 2 off (LARECOMP_VK_NO_SPIRV_CACHE, or the file can't be written)
+
+static void tr_put(const TrRec *r) {
+    if (tr_n * 2 >= tr_cap) {
+        size_t old = tr_cap;
+        TrRec *was = tr_recs;
+        tr_cap = tr_cap ? tr_cap * 2 : 4096;
+        tr_recs = calloc(tr_cap, sizeof *tr_recs);
+        tr_n = 0;
+        for (size_t i = 0; i < old; i++) if (was[i].in) tr_put(&was[i]);
+        free(was);
+    }
+    size_t i = r->in & (tr_cap - 1);
+    while (tr_recs[i].in && tr_recs[i].in != r->in) i = (i + 1) & (tr_cap - 1);
+    if (!tr_recs[i].in) tr_n++;
+    tr_recs[i] = *r;
+}
+
+static const TrRec *tr_get(uint64_t in) {
+    if (!tr_cap) return NULL;
+    for (size_t i = in & (tr_cap - 1); tr_recs[i].in; i = (i + 1) & (tr_cap - 1))
+        if (tr_recs[i].in == in) return &tr_recs[i];
+    return NULL;
+}
+
+static void tr_open(void) {
+    tr_state = 2;
+    if (getenv("LARECOMP_VK_NO_SPIRV_CACHE")) return;
+    char tag[512];
+    shader_cache_tag(tag, sizeof tag, "");
+    uint32_t head[3] = {TR_MAGIC, (uint32_t)sizeof(TrRec), (uint32_t)strlen(tag)};
+    FILE *f = fopen(TR_FILE, "rb");
+    bool same = false;
+    if (f) {
+        uint32_t h[3];
+        char t[512];
+        same = fread(h, sizeof h, 1, f) == 1 && !memcmp(h, head, sizeof h) && h[2] < sizeof t && fread(t, 1, h[2], f) == h[2] &&
+               !memcmp(t, tag, h[2]);
+        TrRec r;
+        while (same && fread(&r, sizeof r, 1, f) == 1)
+            if (r.in) r.si.msl = NULL, tr_put(&r);
+        fclose(f);
+    }
+    mkdir("cache", 0755);
+    if (!(tr_out = fopen(TR_FILE, same ? "ab" : "wb"))) return;
+    if (!same) fwrite(head, sizeof head, 1, tr_out), fwrite(tag, 1, head[2], tr_out), fflush(tr_out);
+    tr_state = 1;
+    LOG("[shader] translations on disk: %zu\n", tr_n);
+}
+
+void vk_translations_preload(void) {
+    pthread_mutex_lock(&translate_lock);
+    if (!tr_state) tr_open();
+    pthread_mutex_unlock(&translate_lock);
+}
+
+// Everything maxwell_translate reads: the shader, its constants, the key, the backend's settings
+static uint64_t tr_in_hash(const uint8_t *code, size_t max, int stage, const ShaderKey *k) {
+    uint64_t h = hash_words(0x7472ull + (uint64_t)stage, code, max);
+    if (maxwell_const_data) h = hash_words(h, maxwell_const_data, maxwell_const_size);
+    h = hash_words(h, k->attr_kind, sizeof k->attr_kind);
+    h = hash_words(h, k->rt_kind, sizeof k->rt_kind);
+    uint64_t kw[5] = {(uint64_t)k->depth_minus_one | (uint64_t)k->flip_y << 1 | (uint64_t)k->flip_x << 2 | (uint64_t)k->glsl << 8,
+                      k->vs_out_mask, k->tex_uint, k->tex_sint, maxwell_const_size};
+    h = hash_words(h, kw, sizeof kw);
+    uint64_t g[6] = {maxwell_gmem_base, maxwell_gmem_size, maxwell_gmem_chunk_shift, maxwell_push_base, maxwell_push_cap,
+                     (uint64_t)maxwell_gmem_lazy | (uint64_t)maxwell_gmem_fs_miss << 1 | (uint64_t)maxwell_glsl_stack_vars << 2 |
+                         (uint64_t)maxwell_glsl_structured << 3 | (uint64_t)maxwell_glsl_push << 4 | (uint64_t)maxwell_glsl_fast_minmax << 5 |
+                         (uint64_t)maxwell_glsl_quad_deriv << 6 | (uint64_t)maxwell_glsl_tint_branch << 7 | (uint64_t)maxwell_gmem_mirror << 8};
+    h = hash_words(h, g, sizeof g);
+    return h ? h : 1;
+}
+
+// maxwell_translate, from the cache when this shader was translated before (then p->spv_key[slot] is set and the
+// ShaderInfo has no text). Under translate_lock.
+static ShaderInfo *tr_translate(Prog *p, int slot, const uint8_t *code, size_t max, int stage, const ShaderKey *k) {
+    p->spv_key[slot] = 0;
+    if (!tr_state) tr_open();
+    bool on = tr_state == 1 && !maxwell_dbg_code;
+    uint64_t in = on ? tr_in_hash(code, max, stage, k) : 0;
+    const TrRec *r = on ? tr_get(in) : NULL;
+    if (r && vk_spirv_have(r->spv)) {
+        ShaderInfo *si = malloc(sizeof *si);
+        *si = r->si;
+        p->spv_key[slot] = r->spv;
+        if (slot == 0) p->vs_uses_vid = r->vid;
+        return si;
+    }
+    ShaderInfo *si = maxwell_translate(code, max, stage, k);
+    if (on && si->msl) {
+        TrRec n = {.in = in, .spv = vk_spirv_key(si->msl, stage), .vid = strstr(si->msl, "gl_VertexIndex") != NULL, .si = *si};
+        n.si.msl = NULL;
+        tr_put(&n);
+        if (fwrite(&n, sizeof n, 1, tr_out) == 1) fflush(tr_out);
+    }
+    return si;
+}
+
+// A stage translated (now or from the cache)
+static bool tr_ok(const Prog *p, int slot, const ShaderInfo *si) { return si->msl || p->spv_key[slot]; }
 
 // Translates both stages (false: failed, logged). Holds the translator for the whole program.
 static bool translate_program_now(Prog *p) {
@@ -2170,40 +2268,40 @@ static bool translate_program_now(Prog *p) {
     // which Vulkan only guarantees at 128 bytes, and at most 64 words)
     uint32_t pc_words = g_vk.props.limits.maxPushConstantsSize / 4;
     maxwell_push_base = 0, maxwell_push_cap = pc_words < 64 ? pc_words : 64;
-    p->vi = maxwell_translate((const uint8_t *)(uintptr_t)p->code[0], p->cmax[0], STAGE_VERTEX, &p->vkey);
-    if (p->vi->msl && p->code[2]) {  // (geometry: between them, its inputs the vertex shader's outputs)
+    p->vi = tr_translate(p, 0, (const uint8_t *)(uintptr_t)p->code[0], p->cmax[0], STAGE_VERTEX, &p->vkey);
+    if (tr_ok(p, 0, p->vi) && p->code[2]) {  // (geometry: between them, its inputs the vertex shader's outputs)
         p->gkey.vs_out_mask = p->vi->out_mask;
         maxwell_const_data = (const uint8_t *)(uintptr_t)(p->code[2] + p->cmax[2]), maxwell_const_size = p->cmax[2] != 0x10000 ? p->csize[2] : 0;
-        p->gi = maxwell_translate((const uint8_t *)(uintptr_t)p->code[2], p->cmax[2], STAGE_GEOMETRY, &p->gkey);
+        p->gi = tr_translate(p, 2, (const uint8_t *)(uintptr_t)p->code[2], p->cmax[2], STAGE_GEOMETRY, &p->gkey);
     }
-    if (p->vi->msl && p->vs_only) {
+    if (tr_ok(p, 0, p->vi) && p->vs_only) {
         p->fi = calloc(1, sizeof *p->fi);
         p->fi->stage = STAGE_FRAGMENT;
         p->fi->msl = strdup("#version 460\nvoid main() {}\n");
-    } else if (p->vi->msl && (!p->gi || p->gi->msl)) {
+    } else if (tr_ok(p, 0, p->vi) && (!p->gi || tr_ok(p, 2, p->gi))) {
         p->fkey.vs_out_mask = p->gi ? p->gi->out_mask : p->vi->out_mask;
         maxwell_const_data = (const uint8_t *)(uintptr_t)(p->code[1] + p->cmax[1]), maxwell_const_size = p->cmax[1] != 0x10000 ? p->csize[1] : 0;
         maxwell_push_base = p->vi->npush * 4u;  // (the fragment shader's words after them)
-        p->fi = maxwell_translate((const uint8_t *)(uintptr_t)p->code[1], p->cmax[1], STAGE_FRAGMENT, &p->fkey);
+        p->fi = tr_translate(p, 1, (const uint8_t *)(uintptr_t)p->code[1], p->cmax[1], STAGE_FRAGMENT, &p->fkey);
     }
     maxwell_const_data = NULL, maxwell_const_size = 0;
     pthread_mutex_unlock(&translate_lock);
-    if (!p->vi->msl) {
+    if (!tr_ok(p, 0, p->vi)) {
         LOG("[shader] VS translate failed: %s (code %llx)\n", p->vi->error, (unsigned long long)p->code[0]);
         atomic_store(&p->state, 2);
         return false;
     }
-    if (p->gi && !p->gi->msl) {
+    if (p->gi && !tr_ok(p, 2, p->gi)) {
         LOG("[shader] GS translate failed: %s (code %llx)\n", p->gi->error, (unsigned long long)p->code[2]);
         atomic_store(&p->state, 2);
         return false;
     }
-    if (!p->fi->msl) {
+    if (!tr_ok(p, 1, p->fi)) {
         LOG("[shader] FS translate failed: %s\n", p->fi->error);
         atomic_store(&p->state, 2);
         return false;
     }
-    p->vs_uses_vid = strstr(p->vi->msl, "gl_VertexIndex") != NULL;
+    if (p->vi->msl) p->vs_uses_vid = strstr(p->vi->msl, "gl_VertexIndex") != NULL;
     return true;
 }
 
@@ -2258,6 +2356,15 @@ static void prep_put(PrepEnt **t, size_t *cap, size_t *n, uint64_t key, void *ob
 }
 #define PREP_GET(tab, key) ({ pthread_mutex_lock(&prep_lock); void *o_ = prep_get(tab, tab##_cap, key); pthread_mutex_unlock(&prep_lock); o_; })
 #define PREP_PUT(tab, key, obj) do { pthread_mutex_lock(&prep_lock); prep_put(&tab, &tab##_cap, &tab##_n, key, obj); pthread_mutex_unlock(&prep_lock); } while (0)
+
+// The kinds of the targets the fragment shader writes only (its header's output map, as the translator reads it):
+// a target it doesn't write gets no output in the code, so its kind can't change the program (translate.c). A draw
+// into a target set with an integer target it doesn't write then finds the program built for plain targets.
+static void rt_kinds_written(ShaderKey *fkey, const uint8_t *fs_code) {
+    uint32_t omap;
+    memcpy(&omap, fs_code + 0x30 + 0x48, 4);
+    for (int rt = 0; rt < 8; rt++) if (!((omap >> (rt * 4)) & 0xF)) fkey->rt_kind[rt] = 0;
+}
 
 static uint64_t prog_content_key(uint64_t vh, uint64_t fh, const ShaderKey *vkey, const ShaderKey *fkey) {
     uint64_t h = 0xcbf29ce484222325ull;
@@ -2697,7 +2804,10 @@ typedef struct {
 // specialization constant no shader reads, with a value new to each run
 static uint32_t cold_nonce(void) {
     static uint32_t n = 1;
-    if (n == 1) n = getenv("LARECOMP_VK_COLD") && atoi(getenv("LARECOMP_VK_COLD")) ? (uint32_t)SDL_GetTicksNS() | 2u : 0;
+    if (n == 1) {  // (a value over 1: that value, so a pre-build process and a later play process see the same keys)
+        int e = getenv("LARECOMP_VK_COLD") ? atoi(getenv("LARECOMP_VK_COLD")) : 0;
+        n = e > 1 ? (uint32_t)e | 2u : e ? (uint32_t)SDL_GetTicksNS() | 2u : 0;
+    }
     return n;
 }
 
@@ -2771,6 +2881,154 @@ static void pipe_ci_fill(PipeCI *c, const PipeKey *k) {
                                            .pDynamicState = &c->dy, .layout = k->prog->layout};
 }
 
+// ================================================================== pipelines from library parts (g_vk.gpl, device.c)
+// The four parts of VK_EXT_graphics_pipeline_library, each kept by what it bakes in: a pipeline whose shaders were
+// built before (for another blend, target format or topology) links from those parts in well under a millisecond,
+// where a full build takes 20 to 140 ms (LARECOMP_VK_GPL_PROBE). A first visit to an area held a frame for each such
+// build (issue #14: ~90 ms holds, 12 s of them in two minutes on an RTX 4070 SUPER). The fast-linked pipeline is
+// replaced by one linked with link-time optimization on a thread of its own (lto_thread), so that never delays a
+// build a draw waits for. Programs and parts are never freed: a part's key may name its program by address.
+typedef struct GplPart { uint64_t key; struct GplPart *next; VkPipeline lib; _Atomic int state; } GplPart;  // 0 building, 1 ready, 2 failed
+#define GPL_TAB 4096
+static GplPart *gpl_tab[GPL_TAB];
+static pthread_mutex_t gpl_lock = PTHREAD_MUTEX_INITIALIZER;
+static _Atomic uint64_t gpl_parts_built, gpl_links;
+
+// The part (0 vertex input, 1 pre-rasterization, 2 fragment shader, 3 fragment output) for c, built once: a worker that
+// needs one another worker is building waits for it
+static VkResult gpl_part_make(int part, const PipeCI *c, VkPipeline *out);
+static VkPipeline gpl_part(int part, uint64_t key, const PipeCI *c) {
+    pthread_mutex_lock(&gpl_lock);
+    GplPart **slot = &gpl_tab[(key ^ (key >> 32)) & (GPL_TAB - 1)], *p = *slot;
+    while (p && p->key != key) p = p->next;
+    bool mine = !p;
+    if (mine) {
+        p = calloc(1, sizeof *p);
+        p->key = key;
+        p->next = *slot;
+        *slot = p;
+    }
+    pthread_mutex_unlock(&gpl_lock);
+    if (!mine) {
+        while (atomic_load(&p->state) == 0) { struct timespec ts = {0, 200000}; nanosleep(&ts, NULL); }
+        return atomic_load(&p->state) == 1 ? p->lib : VK_NULL_HANDLE;
+    }
+    VkResult r = gpl_part_make(part, c, &p->lib);
+    if (r != VK_SUCCESS) {
+        static int n;
+        if (n++ < 10) LOG("[vk] pipeline part %d failed: %d\n", part, r);
+    }
+    atomic_fetch_add(&gpl_parts_built, 1);
+    atomic_store(&p->state, r == VK_SUCCESS ? 1 : 2);
+    return r == VK_SUCCESS ? p->lib : VK_NULL_HANDLE;
+}
+
+// One part made (gpl_part, and the pre-build's warm builds: shader_prep.c)
+static VkResult gpl_part_make(int part, const PipeCI *c, VkPipeline *out) {
+    static const VkGraphicsPipelineLibraryFlagsEXT flag[4] = {
+        VK_GRAPHICS_PIPELINE_LIBRARY_VERTEX_INPUT_INTERFACE_BIT_EXT, VK_GRAPHICS_PIPELINE_LIBRARY_PRE_RASTERIZATION_SHADERS_BIT_EXT,
+        VK_GRAPHICS_PIPELINE_LIBRARY_FRAGMENT_SHADER_BIT_EXT, VK_GRAPHICS_PIPELINE_LIBRARY_FRAGMENT_OUTPUT_INTERFACE_BIT_EXT};
+    // (the rendering info: formats only for the fragment output part, the shader parts' keys leave them out)
+    VkPipelineRenderingCreateInfo ri = c->ri;
+    if (part != 3) ri.colorAttachmentCount = 0, ri.depthAttachmentFormat = ri.stencilAttachmentFormat = VK_FORMAT_UNDEFINED;
+    VkGraphicsPipelineLibraryCreateInfoEXT li = {.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_LIBRARY_CREATE_INFO_EXT,
+                                                 .pNext = &ri, .flags = flag[part]};
+    VkGraphicsPipelineCreateInfo pi = {.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, .pNext = &li,
+        .flags = VK_PIPELINE_CREATE_LIBRARY_BIT_KHR | VK_PIPELINE_CREATE_RETAIN_LINK_TIME_OPTIMIZATION_INFO_BIT_EXT,
+        .pDynamicState = &c->dy, .layout = c->pi.layout};
+    switch (part) {
+    case 0: pi.pVertexInputState = c->pi.pVertexInputState; pi.pInputAssemblyState = &c->ia; break;
+    case 1: pi.stageCount = 1; pi.pStages = c->stages; pi.pViewportState = &c->vs; pi.pRasterizationState = &c->rs; break;
+    case 2: pi.stageCount = 1; pi.pStages = &c->stages[1]; pi.pDepthStencilState = &c->ds; pi.pMultisampleState = &c->ms; break;
+    case 3: pi.pColorBlendState = &c->cb; pi.pMultisampleState = &c->ms; break;
+    }
+    VkPipelineShaderStageCreateInfo pre[2];
+    if (part == 1 && c->pi.stageCount == 3) {  // (c->stages: vertex, fragment, geometry)
+        pre[0] = c->stages[0], pre[1] = c->stages[2];
+        pi.stageCount = 2, pi.pStages = pre;
+    }
+    return vkCreateGraphicsPipelines(g_vk.dev, g_vk.pcache, 1, &pi, NULL, out);
+}
+
+// The parts' keys: what each one bakes in (pipe_ci_fill), the program by address
+static void gpl_keys(const PipeKey *k, uint64_t key[4]) {
+    uint64_t h = hash_words(0x6770c0ull, &k->topo_class, 1);
+    if (!g_vk.vids) {  // (dynamic vertex input: the layout is set per draw, and left out of the key)
+        h = hash_words(h, k->attr_fmt, sizeof k->attr_fmt + sizeof k->attr_off + sizeof k->attr_bind);
+        h = hash_words(h, &k->attr_mask, sizeof k->attr_mask);
+        h = hash_words(h, k->stride, sizeof k->stride + sizeof k->divisor + sizeof k->used_streams);
+    }
+    key[0] = h;
+    key[1] = hash_words(hash_words(0x6770c1ull, &k->prog, sizeof k->prog), &k->poly_fill, 1);
+    uint32_t fs[3] = {k->a2c, k->recol, k->samples};
+    key[2] = hash_words(hash_words(0x6770c2ull, &k->prog, sizeof k->prog), fs, sizeof fs);
+    h = hash_words(0x6770c3ull, k->color, sizeof k->color);
+    uint32_t fo[6] = {k->ncolor, k->samples, k->a2c, k->blend_on, (uint32_t)k->depth, (uint32_t)k->stencil};
+    h = hash_words(h, fo, sizeof fo);
+    h = hash_words(h, k->blend, sizeof k->blend);
+    key[3] = hash_words(h, k->write_mask, sizeof k->write_mask);
+}
+
+static VkResult gpl_link(VkPipeline lib[4], VkPipelineLayout layout, bool optimized, VkPipeline *out) {
+    VkPipelineLibraryCreateInfoKHR li = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LIBRARY_CREATE_INFO_KHR, .libraryCount = 4, .pLibraries = lib};
+    VkGraphicsPipelineCreateInfo pi = {.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, .pNext = &li,
+        .flags = optimized ? VK_PIPELINE_CREATE_LINK_TIME_OPTIMIZATION_BIT_EXT : 0, .layout = layout};
+    return vkCreateGraphicsPipelines(g_vk.dev, g_vk.pcache, 1, &pi, NULL, out);
+}
+
+// The optimized links, one at a time on their own thread (newest first is no better: the queue is short)
+typedef struct LtoJob { Pipe *pp; VkPipeline lib[4]; struct LtoJob *next; } LtoJob;
+static LtoJob *lto_head, *lto_tail;
+static pthread_mutex_t lto_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t lto_cond = PTHREAD_COND_INITIALIZER;
+static void *lto_thread(void *a) {
+    (void)a;
+    plat_thread_default_core();
+    for (;;) {
+        pthread_mutex_lock(&lto_lock);
+        while (!lto_head) pthread_cond_wait(&lto_cond, &lto_lock);
+        LtoJob *j = lto_head;
+        lto_head = j->next;
+        if (!lto_head) lto_tail = NULL;
+        pthread_mutex_unlock(&lto_lock);
+        VkPipeline opt;
+        // (the fast-linked one stays alive: command buffers recorded with it may still be in flight)
+        if (gpl_link(j->lib, j->pp->k.prog->layout, true, &opt) == VK_SUCCESS) __atomic_store_n(&j->pp->pipe, opt, __ATOMIC_RELEASE);
+        free(j);
+    }
+    return NULL;
+}
+static void lto_start(void) {
+    pthread_t t;
+    pthread_create(&t, NULL, lto_thread, NULL);
+    pthread_detach(t);
+}
+static void lto_queue(Pipe *pp, VkPipeline lib[4]) {
+    static pthread_once_t once = PTHREAD_ONCE_INIT;
+    pthread_once(&once, lto_start);
+    LtoJob *j = calloc(1, sizeof *j);
+    j->pp = pp;
+    memcpy(j->lib, lib, sizeof j->lib);
+    pthread_mutex_lock(&lto_lock);
+    if (lto_tail) lto_tail->next = j; else lto_head = j;
+    lto_tail = j;
+    pthread_cond_signal(&lto_cond);
+    pthread_mutex_unlock(&lto_lock);
+}
+
+// pp from its parts: the fast link, the optimized one queued. false: a part failed (then a full build)
+static bool gpl_build(Pipe *pp, const PipeCI *c) {
+    uint64_t key[4];
+    gpl_keys(&pp->k, key);
+    VkPipeline lib[4];
+    for (int i = 0; i < 4; i++)
+        if (!(lib[i] = gpl_part(i, key[i], c))) return false;
+    if (gpl_link(lib, c->pi.layout, false, &pp->pipe) != VK_SUCCESS) return false;
+    atomic_fetch_add(&gpl_links, 1);
+    lto_queue(pp, lib);
+    return true;
+}
+
 static void build_pipeline(void *arg) {
     Pipe *pp = arg;
     PipeKey *k = &pp->k;
@@ -2779,6 +3037,14 @@ static void build_pipeline(void *arg) {
     uint64_t t0 = SDL_GetTicksNS();
     int bs = build_begin("pipeline vs/fs", k->prog->code[0] ? k->prog->code[0] : k->prog->prep_vh,
                          k->prog->code[1] ? k->prog->code[1] : k->prog->prep_fh);
+    extern bool vk_gpl_usable(void);
+    if (vk_gpl_usable() && !k->prog->vs_only && gpl_build(pp, &c)) {  // (vs_only: rasterizer discard, no fragment parts)
+        build_end(bs);
+        atomic_fetch_add(&stat_compiles, 1);
+        atomic_store(&pp->state, 1);
+        slow_build(t0, "pipeline vs/fs", k->prog->code[0], k->prog->code[1]);
+        return;
+    }
     SLOW_FEEDBACK(c.pi);
     extern bool g_shader_stats;
     extern __thread char g_stats_label[128];
@@ -6368,6 +6634,28 @@ static void prep_pipeline(void *arg) {
     const PipeIn in = {r->attrib, r->nattrib, r->stream, r->nstream, r->color, r->channel_mask, r->blend_on, r->blend,
                        r->a2c, r->topo, r->poly_fill};
     pipe_key_fill(&a->pp->k, pr, &in, color, ncolor, depth, stencil, r->samples ? r->samples : 1, NULL);
+    if (r->flags & SR_WARM) {
+        // The shader parts into our pipeline cache, then dropped: a draw links its own pipeline from them in a fraction
+        // of a millisecond. (The driver's own disk cache didn't give them back to the next process: measured, 317 parts
+        // compiled again in the first play, 0 from this cache.) Without the library extension: a whole pipeline, warm only.
+        PipeCI c;
+        pipe_ci_fill(&c, &a->pp->k);
+        VkPipeline p;
+        extern bool vk_gpl_usable(void);
+        if (vk_gpl_usable() && !pr->vs_only) {  // (the shader parts, what a draw links in a fraction of a millisecond)
+            VkPipeline lib[4] = {0};  // (all four, linked as a draw links them: the driver keeps the shader parts then)
+            bool ok = true;
+            for (int part = 0; part < 4; part++) ok &= gpl_part_make(part, &c, &lib[part]) == VK_SUCCESS;
+            if (ok && gpl_link(lib, c.pi.layout, false, &p) == VK_SUCCESS) vkDestroyPipeline(g_vk.dev, p, NULL);
+            for (int part = 0; part < 4; part++) if (lib[part]) vkDestroyPipeline(g_vk.dev, lib[part], NULL);
+        } else if (vkCreateGraphicsPipelines(g_vk.dev, VK_NULL_HANDLE, 1, &c.pi, NULL, &p) == VK_SUCCESS) vkDestroyPipeline(g_vk.dev, p, NULL);
+        VkShaderModule m[4] = {pr->vs, pr->fs, pr->gs, pr->fs_late};
+        for (int i = 0; i < 4; i++) if (m[i]) vkDestroyShaderModule(g_vk.dev, m[i], NULL);
+        if (pr->layout) vkDestroyPipelineLayout(g_vk.dev, pr->layout, NULL);
+        maxwell_free(pr->vi), maxwell_free(pr->fi), maxwell_free(pr->gi), free(pr);
+        free(a->pp), free(a);
+        return;
+    }
     uint64_t ph = hash_words(0xcbf29ce484222325ull, &a->pp->k, sizeof a->pp->k);
     if (!ph) ph = 1;
     // Another record makes the same pipeline (with dynamic vertex input: every record differing only in its vertex
@@ -6403,8 +6691,10 @@ bool renderer_prepare(const ShaderRec *r, const ShaderBlob *vsb, const ShaderBlo
     vkey.flip_x = fkey.flip_x = (r->flags & SR_FLIP_X) != 0;
     for (int i = 0; i < r->nattrib; i++) vkey.attr_kind[i] = (uint8_t)attr_kind(r->attrib[i] & 0xFF);
     for (int i = 0; i < r->ncolor && i < 8; i++) if (r->color[i]) fkey.rt_kind[i] = (uint8_t)rt_kind(r->color[i]);
+    rt_kinds_written(&fkey, fsb->code);
     uint64_t ck = prog_content_key(r->vs, r->fs, &vkey, &fkey);
-    Prog *p = PREP_GET(prep_progs, ck);
+    bool warm = (r->flags & SR_WARM) != 0;  // (the pre-build: built for the driver's cache, then freed: prep_pipeline)
+    Prog *p = warm ? NULL : PREP_GET(prep_progs, ck);
     if (!p) {
         p = calloc(1, sizeof *p);
         p->code[0] = (uintptr_t)vsb->code;
@@ -6422,8 +6712,11 @@ bool renderer_prepare(const ShaderRec *r, const ShaderBlob *vsb, const ShaderBlo
             save_glsl(p->fi->msl, p->fs_rt_hash, "pfs");
         }
         p->code[0] = p->code[1] = 0;  // (the game files' copies are gone after this call)
-        PREP_PUT(prep_progs, ck, p);  // (failed ones too: the game then skips them as it would its own)
-        if (!ok) return false;
+        if (!warm) PREP_PUT(prep_progs, ck, p);  // (failed ones too: the game then skips them as it would its own)
+        if (!ok) {
+            if (warm) maxwell_free(p->vi), maxwell_free(p->fi), free(p);
+            return false;
+        }
         prep_job(compile_program, p);
     }
     if (atomic_load(&p->state) == 2) return false;
@@ -6780,6 +7073,7 @@ static void draw_(CmdRec *r, bool indexed) {
     vkey.depth_minus_one = nvn_depth_mode() == 0;
     for (int i = 0; i < st.nattrib; i++) vkey.attr_kind[i] = (uint8_t)attr_kind(st.attrib[i] & 0xFF);
     for (int i = 0; i < st.rt.ncolor; i++) if (st.rt.color[i]) fkey.rt_kind[i] = (uint8_t)rt_kind(st.rt.color[i]->format);
+    if (st.program->stages[1].code_addr) rt_kinds_written(&fkey, (const uint8_t *)(uintptr_t)st.program->stages[1].code_addr);
     Prog *pr = get_program(st.program, &vkey, &fkey);
     if (pr && atomic_load(&pr->state) == 1) {  // (fragment textures bound to integer views: the program made for them)
         for (int i = 0; i < pr->fi->ntex && i < 64; i++) {

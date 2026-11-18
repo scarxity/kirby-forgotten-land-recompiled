@@ -2,20 +2,34 @@
 
 Versions are tagged `vX.Y.Z`. Small fixes bump the last number; features and large fixes bump the middle one.
 
-## 0.3.1
+## 0.3.2
 
-**Less stutter the first time you play an area** ([#14](https://github.com/scarxity/kirby-forgotten-land-recompiled/issues/14)).
+0.3.1 was published for a few hours and withdrawn: it showed "Preparing graphics for this area... (first visit only)"
+in the middle of play, over and over. Its other changes are in this version.
+
+**Shaders are prepared before you play** ([#14](https://github.com/scarxity/kirby-forgotten-land-recompiled/issues/14)).
 In 0.3.0 every new shader froze the picture until the graphics driver had built it, 20 to 140 ms each, on any PC: a
-fast GPU stuttered as much as a slow one. Now a frame that waits only for a few new shaders (a new effect or enemy)
-waits at most 33 ms and is shown without them; they appear a frame later. Entering a new area still waits behind the
-"Preparing graphics" notice. Measured on an RTX 3050 Laptop with an empty shader cache, over three stages: pauses of
-50 ms or more outside area entry went from 35-37 to 12 a run; about 60 frames a run show a few objects one frame late.
-Later visits use the shader cache, as before.
+fast GPU stuttered as much as a slow one. Now the launcher prepares every shader of your game files once, as a PC game
+does, after the game code is built: "Preparing shaders", about 7 minutes on an 8-core laptop. It runs again only when
+the graphics driver, this program or the mods switched on change, and Play does it first then. Nothing is drawn over the
+game and no object is ever left out of a frame. Measured on an RTX 3050 Laptop, first stage, first play after the
+prepare step: pauses of 50 ms or more went from 52 (the longest 1.4 s) to 9 (the longest 0.13 s), at the first frame of
+a new area or a shader the prepare step can't foresee; later plays have none of these.
 
-Unzip over 0.3.0: the game code from 0.3.0 is used as it is, nothing to rebuild.
+The prepared shaders take about 2 GB in the `cache` folder.
+
+Unzip over 0.3.0: the game code from 0.3.0 is used as it is; the first Play prepares the shaders.
 
 ### Changed
-- `LARECOMP_HOLD_SMALL_MS` sets how long such a frame waits (default 33)
+- No "Preparing graphics for this area... (first visit only)" box over the game any more
+- Frame Generation is in the game's menu under Experimental (off by default)
+- Quit in the game's menu closes the game, back to the launcher you started it from: no "Return to Launcher", which
+  opened a second, older start screen in the game's window. Started on its own, ForgottenLandRecomp.exe opens the
+  launcher
+- The shader caches are files of their own (`cache/spirv.bin`, compressed, and `cache/translations.bin`) instead of
+  tens of thousands of small files; the old `cache/spirv` folder is removed. The graphics driver's own shader cache is
+  not used where the driver allows it (`LARECOMP_VK_DRIVER_CACHE=1` uses it): it is capped, and once full it kept
+  nothing the prepare step built
 
 ### Added
 - Mods. A folder `mods\<name>\romfs\...` in the install folder replaces the game's RomFS files of the same path.
@@ -24,13 +38,16 @@ Unzip over 0.3.0: the game code from 0.3.0 is used as it is, nothing to rebuild.
   mod by Lhw-Arthas ([#9](https://github.com/scarxity/kirby-forgotten-land-recompiled/pull/9))
 
 ### Added (testing)
-- `LARECOMP_VK_COLD=1` makes every pipeline new to the driver's cache, as on a player's first run, and
-  `tools/verify/hold_stats.py` sums a run's stutter; `docs/testing.md` has the steps
-- The stage tour counts the draws shown late in its 2-second stats line, and allows only those
+- `LARECOMP_VK_COLD=<n>` makes every pipeline new to the driver's cache, as on a player's first run (the same number
+  in the prepare process and the play process), and `tools/verify/hold_stats.py` sums a run's stutter;
+  `docs/testing.md` has the steps
+- The stage tour's 2-second stats line counts the draws in held frames
 
 ### Known issues
 - As 0.3.0, and: Intel GPUs are untested on 0.3.x ([#12](https://github.com/scarxity/kirby-forgotten-land-recompiled/issues/12)
   was reported on 0.2.0). Frame Generation (in the game's menu) is still untested
+- The small guide video at the bottom right in the first stage was reported black on one PC with Frame Generation on.
+  It plays in every test run, with Frame Generation too; if you see it, turning Frame Generation off is worth a try
 
 ## 0.3.0
 

@@ -33,11 +33,11 @@ Reproduce the opening and the first stage with `bash tools/run_scripted.sh <name
 - Nobody has played the game start to finish. Bosses, the later worlds by real play, and the ending are not checked.
 - Starting the world map or Waddle Dee Town directly with `LARECOMP_STAGE` (a test shortcut that skips the story)
   crashes. Reached by play, the Town runs without error.
-- A first visit to an area pauses while its shaders build, on the "Preparing graphics for this area" notice. On a
-  2-core PC with a cold cache the pause at the beach was about 15 to 25 s (an older measurement). Fast PCs pause less.
-  Later visits use the shader cache: the longest pause on a second run was about 1.2 s, with a cold driver cache.
-- In an area already entered, a new effect or enemy can still pause the picture for up to 33 ms while its shaders
-  build, or appear a frame late (0.3.1; 12 pauses of 50 ms or more a run on the three-stage cold test, down from 36).
+- The launcher prepares every shader of the game files before the first play (0.3.2, about 7 minutes on an 8-core
+  laptop). The first play after it still pauses briefly: on an RTX 3050 Laptop, 9 pauses of 50 ms or more in the first
+  stage, the longest 0.13 s (52, the longest 1.4 s, without the prepare step), at the first frame of a new area (its
+  shaders read from disk) and for about 18 shader parts the prepare step can't foresee (a vertex input the game files
+  don't name). These are kept, so later plays have none.
 - Rarely, the game crashed after the opening movie while the PC was heavily overloaded: a UI script read an empty
   widget. It did not happen in 15 runs without other load, including runs that starved the game's threads on purpose
   and 3,265 injected pauses.

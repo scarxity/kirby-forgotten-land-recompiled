@@ -73,4 +73,11 @@ with tempfile.TemporaryDirectory() as d:
     open(log, 'w').write((LOG % 5).replace('5 skipped,', '5 skipped (0 in held frames, 2 late),'))
     r = stage_check.check('Cat/Stage/Step01', log, shot, snd, 600)
     assert r['skipped_after_hold'] == 3 and r['verdict'] == 'FAIL: skipped draws', r
+    # 0.3.2 never holds a frame: the line only says how many were late
+    open(log, 'w').write((LOG % 4).replace('4 skipped,', '4 skipped (4 late),'))
+    r = stage_check.check('Cat/Stage/Step01', log, shot, snd, 600)
+    assert r['skipped_after_hold'] == 0 and r['late_draws'] == 4 and r['verdict'] == 'PASS', r
+    open(log, 'w').write((LOG % 4).replace('4 skipped,', '4 skipped (1 late),'))
+    r = stage_check.check('Cat/Stage/Step01', log, shot, snd, 600)
+    assert r['skipped_after_hold'] == 3 and r['verdict'] == 'FAIL: skipped draws', r
 print('stage_check: ok')

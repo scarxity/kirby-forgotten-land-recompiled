@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { BUSY_PHASES, PHASE_LABEL, REBUILD_NOTE, modsLocked, primaryAction, toolsMissing } from './action.js';
+import { BUSY_PHASES, PHASE_LABEL, REBUILD_NOTE, SHADERS_NOTE, modsLocked, primaryAction, toolsMissing } from './action.js';
 
 const base = { running: false, phase: 'idle', game_dir: 'D:\dump', game_error: null, tools_missing: [], built: true, error: '' };
 
@@ -15,6 +15,12 @@ test('primary action follows the setup state', () => {
   assert.equal(primaryAction({ ...base, built: false, phase: 'files' }).busy, true);
   assert.equal(primaryAction(base).act, 'play');
   assert.equal(primaryAction({ ...base, running: true }).act, null);
+});
+
+test('Play says it prepares the shaders first when they are not prepared for this driver', () => {
+  assert.deepEqual(primaryAction({ ...base, shaders_ready: false }), { label: 'Play', act: 'play', detail: SHADERS_NOTE });
+  assert.equal(primaryAction({ ...base, shaders_ready: true }).detail, undefined);
+  assert.equal(primaryAction({ ...base, phase: 'shaders' }).busy, true);
 });
 
 test('game code built by another version is offered a rebuild, not Play', () => {

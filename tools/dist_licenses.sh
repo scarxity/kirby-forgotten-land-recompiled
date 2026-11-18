@@ -23,6 +23,7 @@ cp $M/SDL3/LICENSE.txt "$L/SDL3-zlib.txt"
 cp $M/shaderc/LICENSE "$L/shaderc-Apache-2.0.txt"
 cp $M/glslang/LICENSE.txt "$L/glslang.txt"  # (built into libshaderc_shared.dll)
 cp $M/spirv-tools/LICENSE "$L/SPIRV-Tools-Apache-2.0.txt"
+cp $M/zstd/LICENSE "$L/zstd-BSD.txt"  # (linked into the runtime: the pre-build reads the compressed game files)
 cp $M/libiconv/COPYING.LIB "$L/libiconv-LGPL.txt"
 cp $M/libgcc/COPYING.RUNTIME "$L/GCC-runtime-library-exception.txt"
 cp $M/libgcc/COPYING3 "$L/GCC-GPL-3.0.txt"

@@ -20,6 +20,7 @@
 
 #include "../paths.h"
 #include "../platform.h"
+#include "../../game/game.h"
 #include "darwin_common.h"
 #include "ios_internal.h"
 #include "posix_log.h"
@@ -218,7 +219,7 @@ void plat_exec(char *const argv[]) { (void)argv; }  // (no exec on iOS: the call
 static atomic_int g_fatal_box;  // 1: on screen, 2: closed
 static void SDLCALL fatal_box(void *text) {
     atomic_store(&g_fatal_box, 1);
-    SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "LAS Recomp", text, NULL);
+    SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, GAME_NAME, text, NULL);
     atomic_store(&g_fatal_box, 2);
 }
 void plat_fatal_notice(void) {

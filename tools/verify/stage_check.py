@@ -15,7 +15,7 @@ import struct
 import sys
 import zlib
 
-VK = re.compile(r'\[vk\] t=[\d.]+ frame (\d+) .*?\((\d+) draws, (\d+) skipped(?: \((\d+) in held frames(?:, (\d+) late)?\))?')
+VK = re.compile(r'\[vk\] t=[\d.]+ frame (\d+) .*?\((\d+) draws, (\d+) skipped(?: \((?:(\d+) in held frames)?(?:, )?(?:(\d+) late)?\))?')
 STEP_READ = '[fs] read ubin/Step/Map/'
 NOTED = ('[hle] UNIMPLEMENTED', '[ipc] STUB', '(unhandled')
 

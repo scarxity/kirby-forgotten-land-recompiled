@@ -998,3 +998,17 @@ const char *plat_cloud_synced(const char *dir) {
 
 // End the process at once, skipping DLL teardown (from an atexit handler, after flushing). Exit status 0.
 void plat_terminate(void) { publish_log(); TerminateProcess(GetCurrentProcess(), 0); }
+
+// Forgotten Land's own launcher (ForgottenLandLauncher.exe, beside this exe) sets the game up and starts it with --play.
+// This exe started on its own opens that launcher instead of LAS Recomp's start screen. False: no launcher there (a
+// developer build), and the start screen comes up.
+bool plat_open_own_launcher(void) {
+    wchar_t path[MAX_PATH];
+    DWORD n = GetModuleFileNameW(NULL, path, MAX_PATH);
+    wchar_t *slash = n && n < MAX_PATH ? wcsrchr(path, L'\\') : NULL;
+    static const wchar_t name[] = L"ForgottenLandLauncher.exe";
+    if (!slash || (size_t)(slash + 1 - path) + sizeof name / sizeof *name > MAX_PATH) return false;
+    wcscpy(slash + 1, name);
+    if (GetFileAttributesW(path) == INVALID_FILE_ATTRIBUTES) return false;
+    return (INT_PTR)ShellExecuteW(NULL, L"open", path, NULL, NULL, SW_SHOWNORMAL) > 32;
+}

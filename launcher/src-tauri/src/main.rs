@@ -30,6 +30,8 @@ const CODE_BYTES: u64 = 1_000_000_000;
 const MAX_WORK_PATH: usize = 200;
 /// A game that ends sooner than this after it started did not get anywhere: the launcher says so.
 const EARLY_EXIT: Duration = Duration::from_secs(15);
+/// What the shaders were last prepared for (shader_stamp), in the work folder
+const SHADER_STAMP: &str = "shaders-prepared.txt";
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -41,6 +43,8 @@ enum Phase {
     Files,
     Translate,
     Compile,
+    /// The game started hidden to prepare every shader of the game files, so play compiles none (runtime/nvn/shader_prep.c).
+    Shaders,
     Failed,
 }
 
@@ -100,6 +104,7 @@ fn parse_setup_line(line: &str) -> Option<SetupLine> {
                 "looking" | "copying" => Phase::Files,
                 "reading" => Phase::Translate,
                 "compiling" | "finishing" => Phase::Compile,
+                "shaders" => Phase::Shaders,
                 _ => return None,
             };
             let fraction = w.next()?.parse().ok()?;
@@ -238,6 +243,8 @@ struct Status {
     mods: Vec<ModEntry>,
     crash: Option<Crash>,
     packaged: bool,
+    /// Play prepares the shaders first (shader_stamp)
+    shaders_ready: bool,
 }
 
 fn find_repo(exe_dir: &Path) -> Option<PathBuf> {
@@ -450,6 +457,9 @@ impl App {
     fn built(&self) -> bool {
         self.code() == Code::Ready
     }
+    fn shaders_ready(&self) -> bool {
+        fs::read_to_string(self.work.join(SHADER_STAMP)).is_ok_and(|s| s == shader_stamp(self))
+    }
     /// The game files the player picked: the junction in developer mode, the remembered folder in packaged mode (or,
     /// once that is forgotten, the install folder's own copy).
     fn game_source(&self) -> Option<PathBuf> {
@@ -624,6 +634,7 @@ fn status(app: St) -> Status {
         mods: read_mods(&app.mods_dir()),
         crash: app.crash.lock().unwrap().clone(),
         packaged: matches!(app.mode, Mode::Packaged),
+        shaders_ready: app.shaders_ready(),
     }
 }
 
@@ -685,10 +696,10 @@ fn run_step(app: &App, phase: Phase, mut cmd: Command, log: &mut fs::File) -> Re
 }
 
 // Packaged mode's Build: the runtime's headless setup, its progress lines mapped onto the phases
-fn run_setup(app: &App, mut cmd: Command, log: &mut fs::File) -> Result<(), String> {
+fn run_setup(app: &App, first: Phase, mut cmd: Command, log: &mut fs::File) -> Result<(), String> {
     let err = log.try_clone().map_err(|e| e.to_string())?;
     let _ = writeln!(log, "== {cmd:?}");
-    let out = spawn_step(app, Phase::Files, cmd.stdout(Stdio::piped()).stderr(err))?.ok_or("no setup output")?;
+    let out = spawn_step(app, first, cmd.stdout(Stdio::piped()).stderr(err))?.ok_or("no setup output")?;
     let mut end = None;
     for line in BufReader::new(out).lines().map_while(Result::ok) {
         match parse_setup_line(&line) {
@@ -765,9 +776,9 @@ fn start_setup(app: St, code_only: Option<bool>) -> Result<(), String> {
                     None => c.arg("--rebuild-code"),
                 };
                 hide_window(&mut c);
-                run_setup(&app, c, &mut log)
+                run_setup(&app, Phase::Files, c, &mut log)
             }
-        });
+        }.and_then(|()| run_shaders(&app, &mut log)));
         let mut job = app.job.lock().unwrap();
         match result {
             Ok(()) => job.phase = Phase::Idle,
@@ -812,6 +823,36 @@ fn play(app: St) -> Result<(), String> {
         return Err("The game code was not built by this version of the program. Open Set up and build it again.".into());
     }
     *app.crash.lock().unwrap() = None;
+    if app.shaders_ready() {
+        return start_game(&app, &mut game);
+    }
+    drop(game);
+    {
+        let mut job = app.job.lock().unwrap();
+        if !matches!(job.phase, Phase::Idle | Phase::Failed) {
+            return Ok(());
+        }
+        *job = Job { phase: Phase::Shaders, ..Job::default() };
+    }
+    let app = Arc::clone(&app);
+    std::thread::spawn(move || {
+        let result = fs::File::create(app.work.join("setup.log"))
+            .map_err(|e| e.to_string())
+            .and_then(|mut log| run_shaders(&app, &mut log))
+            .and_then(|()| start_game(&app, &mut app.game.lock().unwrap()));
+        let mut job = app.job.lock().unwrap();
+        match result {
+            Ok(()) => job.phase = Phase::Idle,
+            Err(e) => {
+                job.phase = if job.cancelled { Phase::Idle } else { Phase::Failed };
+                job.error = if job.cancelled { String::new() } else { e };
+            }
+        }
+    });
+    Ok(())
+}
+
+fn start_game(app: &App, game: &mut Option<(Child, Instant)>) -> Result<(), String> {
     let log = fs::File::create(app.work.join("game.log")).map_err(|e| e.to_string())?;
     let child = app
         .runtime()
@@ -824,6 +865,44 @@ fn play(app: St) -> Result<(), String> {
         .map_err(|e| format!("Could not start the game: {e}"))?;
     *game = Some((child, Instant::now()));
     Ok(())
+}
+
+/// What the prepared shaders were made for: the runtime (its shader translator), the display drivers (each compiles
+/// its own) and the mods switched on (they can replace shaders). Another one prepares them again before play.
+fn shader_stamp(app: &App) -> String {
+    let exe = fs::metadata(app.exe()).ok().map(|m| (m.len(), m.modified().ok()));
+    let mods: Vec<String> = read_mods(&app.mods_dir()).into_iter().filter(|m| m.on).map(|m| m.name).collect();
+    format!("runtime {exe:?}\ndrivers {}\nmods {}\n", display_drivers(), mods.join("/"))
+}
+
+/// The display adapters' driver versions (read once per launcher start)
+#[cfg(windows)]
+fn display_drivers() -> String {
+    static SEEN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    SEEN.get_or_init(|| {
+        let mut c = Command::new("reg");
+        c.args(["query", r"HKLM\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}", "/s", "/v", "DriverVersion"]);
+        hide_window(&mut c);
+        let out = c.output().map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
+        out.lines().filter(|l| l.contains("DriverVersion")).filter_map(|l| l.split_whitespace().last()).collect::<Vec<_>>().join(",")
+    })
+    .clone()
+}
+#[cfg(not(windows))]
+fn display_drivers() -> String {
+    String::new()
+}
+
+/// Every shader of the game files prepared (minutes, once): the game started hidden, prints its progress, and exits
+fn run_shaders(app: &App, log: &mut fs::File) -> Result<(), String> {
+    let mut c = app.runtime();
+    c.args(["extracted", "--play"]).env("LARECOMP_GAME_LIB", app.lib()).stdin(Stdio::null());
+    for v in ["LARECOMP_HIDDEN", "LARECOMP_NO_USER_INPUT", "LARECOMP_SHADER_PREP", "LARECOMP_SHADER_PREBUILD", "LARECOMP_SHADER_PREP_EXIT"] {
+        c.env(v, "1");
+    }
+    hide_window(&mut c);
+    run_setup(app, Phase::Shaders, c, log)?;
+    fs::write(app.work.join(SHADER_STAMP), shader_stamp(app)).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1013,6 +1092,7 @@ mod tests {
         assert_eq!(parse_setup_line("phase copying 0.010"), Some(SetupLine::Progress(Phase::Files, 0.01, None)));
         assert_eq!(parse_setup_line("phase reading 0.200"), Some(SetupLine::Progress(Phase::Translate, 0.2, None)));
         assert_eq!(parse_setup_line("phase finishing 0.990"), Some(SetupLine::Progress(Phase::Compile, 0.99, None)));
+        assert_eq!(parse_setup_line("phase shaders 0.250 5000/20000"), Some(SetupLine::Progress(Phase::Shaders, 0.25, Some("5000/20000".into()))));
         assert_eq!(
             parse_setup_line("phase compiling 0.925 (main_180.c, 7 min)"),
             Some(SetupLine::Progress(Phase::Compile, 0.925, Some("(main_180.c, 7 min)".into())))
@@ -1039,7 +1119,7 @@ mod tests {
         let app = app("", "");
         let mut c = Command::new("cmd");
         c.args(["/C", "echo phase compiling 0.500& echo failed copy& exit 1"]);
-        let r = run_setup(&app, c, &mut fs::File::create(root.join("log")).unwrap());
+        let r = run_setup(&app, Phase::Files, c, &mut fs::File::create(root.join("log")).unwrap());
         assert_eq!(r, Err(setup_failure("copy")));
         assert_eq!(app.job.lock().unwrap().progress, Some(0.5));
         fs::remove_dir_all(&root).unwrap();

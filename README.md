@@ -16,8 +16,8 @@ an emulator.
 
 Version 0.3.0 is rebuilt on [LAS Recomp](https://github.com/peiikai/LASRecomp)'s engine. The game boots, plays its
 opening and runs the first stage with scripted input, and a stage tour starts a game at each of its 109 stages. Stage
-music plays. A new area shows a "Preparing graphics" notice while its shaders build, instead of a black or half-drawn
-screen. [docs/STATUS.md](docs/STATUS.md) lists what has been checked and how, and the known problems.
+music plays. The launcher prepares every shader of the game files before the first play, as a PC game does, so play
+compiles almost none. [docs/STATUS.md](docs/STATUS.md) lists what has been checked and how, and the known problems.
 
 Supported dump: the base game, v1.0.0 (program id `01004D300C5AE000`, `main` build id `d9ba7db72ffafecd`). The
 launcher refuses other versions and the update when you pick the folder.
@@ -73,7 +73,7 @@ Install the tools once:
 2. MSYS2 with the UCRT64 packages, in PowerShell:
    ```powershell
    winget install --id MSYS2.MSYS2 -e
-   $env:MSYSTEM='UCRT64'; C:\msys64\usr\bin\bash.exe -lc "pacman -S --needed --noconfirm --disable-download-timeout make mingw-w64-ucrt-x86_64-clang mingw-w64-ucrt-x86_64-lld mingw-w64-ucrt-x86_64-sdl3 mingw-w64-ucrt-x86_64-ffmpeg mingw-w64-ucrt-x86_64-vulkan-devel mingw-w64-ucrt-x86_64-shaderc mingw-w64-ucrt-x86_64-spirv-tools mingw-w64-ucrt-x86_64-pkgconf mingw-w64-ucrt-x86_64-gdb mingw-w64-ucrt-x86_64-vulkan-memory-allocator mingw-w64-ucrt-x86_64-vulkan-validation-layers"
+   $env:MSYSTEM='UCRT64'; C:\msys64\usr\bin\bash.exe -lc "pacman -S --needed --noconfirm --disable-download-timeout make mingw-w64-ucrt-x86_64-clang mingw-w64-ucrt-x86_64-lld mingw-w64-ucrt-x86_64-sdl3 mingw-w64-ucrt-x86_64-ffmpeg mingw-w64-ucrt-x86_64-vulkan-devel mingw-w64-ucrt-x86_64-shaderc mingw-w64-ucrt-x86_64-spirv-tools mingw-w64-ucrt-x86_64-pkgconf mingw-w64-ucrt-x86_64-zstd mingw-w64-ucrt-x86_64-gdb mingw-w64-ucrt-x86_64-vulkan-memory-allocator mingw-w64-ucrt-x86_64-vulkan-validation-layers"
    ```
    To build the release zip, also install `mingw-w64-ucrt-x86_64-nasm` (`make deps-windows` needs it).
 3. The generator's Python environment, in the repository folder (the Makefile looks for `.venv`):

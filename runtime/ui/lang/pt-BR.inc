@@ -418,8 +418,6 @@
 {"Some of the game's files are missing, usually from a copy or unzip that stopped partway. Copy them again and choose the folder again.", "Alguns arquivos do jogo estão faltando, geralmente por uma cópia ou extração que parou no meio. Copie de novo e escolha a pasta de novo."},
 {"Make sure there's about 2 GB free and try again. If it keeps happening, report it on GitHub.", "Verifique se há cerca de 2 GB livres e tente de novo. Se continuar acontecendo, relate no GitHub."},
 {"Preparing shaders", "Preparando shaders"},
-{"Preparing graphics for this area... (first visit only)", "Preparando os gráficos desta área... (só na primeira visita)"},
-{"%d of %d", "%d de %d"},
 {"Build cancelled. The finished parts are kept, so you can resume later.", "Compilação cancelada. As partes prontas ficam guardadas, então você pode continuar depois."},
 {"Copying the game files...", "Copiando os arquivos do jogo..."},
 {"Looking for the game files...", "Procurando os arquivos do jogo..."},

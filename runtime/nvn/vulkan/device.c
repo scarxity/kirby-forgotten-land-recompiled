@@ -434,6 +434,9 @@ static void *pipeline_cache_saver(void *a) {
         if (rq_stopping()) break;  // (quitting: backend_quit saves it)
         uint64_t now = SDL_GetTicks();
         if (now - last < 15000 || (vk_builds_pending() && now - last < 180000)) continue;
+        // (a cache the shader prepare step filled, 1.5 GB: kept at exit only. Writing it held pipeline builds for the
+        // whole save: frames held 1.5-1.8 s in play. What play adds to it after the prepare step is little)
+        if (pcache_saved > (256u << 20)) continue;
         vk_pipeline_cache_save();
         last = now;
     }
@@ -688,6 +691,19 @@ static void log_pipeline_stats(VkPipeline p) {
     }
 }
 
+#ifdef VK_KHR_pipeline_binary
+static bool own_cache;  // the driver's internal cache off (device creation)
+#endif
+
+// Pipelines from library parts (exec.c build_pipeline): not with shader statistics or pipeline binaries, which go
+// through vk_create_graphics_pipeline whole
+bool vk_gpl_usable(void) {
+#ifdef VK_KHR_pipeline_binary
+    if (pb.on) return false;
+#endif
+    return g_vk.gpl && !g_shader_stats;
+}
+
 VkResult vk_create_graphics_pipeline(const VkGraphicsPipelineCreateInfo *ci, VkPipeline *out) {
     if (g_shader_stats) {
         VkGraphicsPipelineCreateInfo c = *ci;
@@ -824,6 +840,7 @@ static void create_device(void) {
     g_vk.divisor = g_vk.divisor && have_div.vertexAttributeInstanceRateDivisor;
     g_fault_ext = fault = fault && have_ff.deviceFault;
     g_va_report = g_va_report && fault && have_va.reportAddressBinding;
+    bool gpl_fast = false;  // (the graphics pipeline library with fast linking: exec.c builds pipelines from its parts)
     {   // what the driver offers for building pipelines (one line, for #92 reports)
         VkPhysicalDeviceDriverProperties drv = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};
         VkPhysicalDeviceProperties2 pr = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &drv};
@@ -873,6 +890,7 @@ static void create_device(void) {
                     "scratch memory until its reset\n");
         }
 #ifdef VK_EXT_graphics_pipeline_library
+        gpl_fast = gpl_ext && have_gpl.graphicsPipelineLibrary && gplp.graphicsPipelineLibraryFastLinking;
         if (gpl_ext)
             snprintf(gpl, sizeof gpl, "%s (fast linking %s, independent interpolation decoration %s)",
                      have_gpl.graphicsPipelineLibrary ? "yes" : "no", gplp.graphicsPipelineLibraryFastLinking ? "yes" : "no",
@@ -901,15 +919,21 @@ static void create_device(void) {
         bool amd = drv.driverID == VK_DRIVER_ID_AMD_PROPRIETARY || drv.driverID == VK_DRIVER_ID_AMD_OPEN_SOURCE;
         bool can = pbin_ext && have_pbin.pipelineBinaries && have_m5.maintenance5;
         pb.on = can && (e && *e ? atoi(e) != 0 : amd);
+        // Without our binaries: the driver's internal cache off where it can be, so what the shader prepare step built
+        // comes back from our pipeline cache file. (NVIDIA's own cache is capped and shared: once full it kept none of
+        // the prepared shader parts, 274 compiled again in the first play.) LARECOMP_VK_DRIVER_CACHE=1 keeps it.
+        const char *dc = getenv("LARECOMP_VK_DRIVER_CACHE");
+        own_cache = can && !pb.on && pbp.pipelineBinaryInternalCacheControl && !(dc && atoi(dc));
         if (pbin_ext)
             LOG("[vk] pipeline binaries: feature %s, internal cache %d (control %d, prefers it %d, precompiled %d), "
                 "compressed %d -> %s\n", have_pbin.pipelineBinaries ? "yes" : "no", pbp.pipelineBinaryInternalCache,
                 pbp.pipelineBinaryInternalCacheControl, pbp.pipelineBinaryPrefersInternalCache,
                 pbp.pipelineBinaryPrecompiledInternalCache, pbp.pipelineBinaryCompressedData,
-                pb.on ? "stored by us (cache/vk_binaries)" : !can ? "pipeline cache (not supported)" :
+                pb.on ? "stored by us (cache/vk_binaries)" : own_cache ? "pipeline cache, the driver's own cache off" :
+                !can ? "pipeline cache (not supported)" :
                 e && *e ? "pipeline cache (LARECOMP_VK_PIPELINE_BINARY=0)" : "pipeline cache (not an AMD driver)");
         else if (e && atoi(e)) LOG("[vk] pipeline binaries: no VK_KHR_pipeline_binary; pipeline cache\n");
-        if (pb.on) {
+        if (pb.on || own_cache) {
             ext[n_ext++] = VK_KHR_MAINTENANCE_5_EXTENSION_NAME;
             ext[n_ext++] = VK_KHR_PIPELINE_BINARY_EXTENSION_NAME;
         }
@@ -933,14 +957,24 @@ static void create_device(void) {
                  !vids_ext ? "no VK_EXT_vertex_input_dynamic_state" : "vertexInputDynamicState not supported");
     }
 #ifdef VK_EXT_graphics_pipeline_library
-    {   // LARECOMP_VK_GPL_PROBE=1: library builds timed after shader preparation (exec.c gpl_probe); nothing else uses it
+    {   // LARECOMP_VK_GPL_PROBE=1: library builds timed after shader preparation (exec.c gpl_probe)
         const char *e = getenv("LARECOMP_VK_GPL_PROBE");
         if (e && atoi(e)) {
             g_vk.gpl_probe = gpl_ext && have_gpl.graphicsPipelineLibrary;
-            if (g_vk.gpl_probe) {
-                ext[n_ext++] = VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME;
-                ext[n_ext++] = VK_EXT_GRAPHICS_PIPELINE_LIBRARY_EXTENSION_NAME;
-            } else LOG("[gpl] probe: the driver has no graphics pipeline library; skipped\n");
+            if (!g_vk.gpl_probe) LOG("[gpl] probe: the driver has no graphics pipeline library; skipped\n");
+        }
+        // Pipelines from their parts (exec.c build_pipeline): a new combination of shaders already built links in well
+        // under a millisecond instead of a full build of 20 to 140 ms, so a first visit holds far fewer frames. The
+        // linked pipeline is replaced by an optimized one built in the background. LARECOMP_VK_GPL=0: full builds.
+        const char *on = getenv("LARECOMP_VK_GPL");
+        bool off = on && *on && !atoi(on);
+        g_vk.gpl = gpl_fast && !off;
+        LOG("[vk] pipelines: %s\n", g_vk.gpl ? "linked from shader parts, optimized in the background"
+                                   : off ? "full builds (LARECOMP_VK_GPL=0)"
+                                   : "full builds (no graphics pipeline library with fast linking)");
+        if (g_vk.gpl || g_vk.gpl_probe) {
+            ext[n_ext++] = VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME;
+            ext[n_ext++] = VK_EXT_GRAPHICS_PIPELINE_LIBRARY_EXTENSION_NAME;
         }
     }
 #else
@@ -997,12 +1031,15 @@ static void create_device(void) {
                                                      .maintenance5 = VK_TRUE};
     VkPhysicalDevicePipelineBinaryFeaturesKHR en_pbin = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PIPELINE_BINARY_FEATURES_KHR,
                                                          .pipelineBinaries = VK_TRUE, .pNext = &en_m5};
-    if (pb.on) en_m5.pNext = f.pNext, f.pNext = &en_pbin;
+    if (pb.on || own_cache) en_m5.pNext = f.pNext, f.pNext = &en_pbin;
+    VkDevicePipelineBinaryInternalCacheControlKHR en_icc = {.sType = VK_STRUCTURE_TYPE_DEVICE_PIPELINE_BINARY_INTERNAL_CACHE_CONTROL_KHR,
+                                                            .disableInternalCache = VK_TRUE};
+    if (own_cache) en_icc.pNext = f.pNext, f.pNext = &en_icc;
 #endif
 #ifdef VK_EXT_graphics_pipeline_library
     VkPhysicalDeviceGraphicsPipelineLibraryFeaturesEXT en_gpl = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_GRAPHICS_PIPELINE_LIBRARY_FEATURES_EXT, .graphicsPipelineLibrary = VK_TRUE};
-    if (g_vk.gpl_probe) en_gpl.pNext = f.pNext, f.pNext = &en_gpl;
+    if (g_vk.gpl || g_vk.gpl_probe) en_gpl.pNext = f.pNext, f.pNext = &en_gpl;
 #endif
     VkPhysicalDeviceFeatures *b = &f.features, *h = &have.features;
     b->independentBlend = h->independentBlend;
@@ -1790,52 +1827,7 @@ static void ip_present_mid(TexBackend *b) {  // an in-between in b (the game's i
     }
     vk_ip_mid = false;
 }
-// ---- frames held for shader builds (exec.c vk_build_hold)
-// A copy of the last frame shown, taken when a run of held frames begins (their lists may draw into its texture), is
-// presented again with the overlay's notice while the builds go on.
 NvnTexture *g_vk_shown;  // the last game texture presented (textures.c forgets it when it is destroyed)
-static TexBackend hold_img;
-static void hold_begin(void) {
-    TexBackend *b = g_vk_shown ? vk_tex(g_vk_shown, true) : NULL;
-    if (hold_img.image && (!b || hold_img.width != b->width || hold_img.height != b->height || hold_img.format != b->format)) {
-        vk_views_forget(&hold_img);
-        vk_defer_image(hold_img.image, hold_img.mem);
-        hold_img.image = VK_NULL_HANDLE;
-    }
-    if (!b || !b->image || b->aspect != VK_IMAGE_ASPECT_COLOR_BIT || b->depth > 1 || b->layers > 1) return;
-    vk_end_pass();
-    VkCommandBuffer cb = vk_cmd();
-    if (!hold_img.image) {
-        VkImageCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .flags = VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT,
-                                .imageType = VK_IMAGE_TYPE_2D, .format = b->format, .extent = {b->width, b->height, 1},
-                                .mipLevels = 1, .arrayLayers = 1, .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
-                                .usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-                                .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
-        VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
-        if (vmaCreateImage(g_vk.vma, &ci, &ai, &hold_img.image, &hold_img.mem, NULL) != VK_SUCCESS) { hold_img.image = VK_NULL_HANDLE; return; }
-        hold_img.format = b->format, hold_img.base_type = VK_IMAGE_VIEW_TYPE_2D, hold_img.aspect = VK_IMAGE_ASPECT_COLOR_BIT;
-        hold_img.width = b->width, hold_img.height = b->height, hold_img.depth = hold_img.layers = hold_img.levels = hold_img.samples = 1;
-        vk_image_init_layout(cb, hold_img.image, VK_IMAGE_ASPECT_COLOR_BIT);
-    }
-    hold_img.scalable = b->scalable, hold_img.sx = b->sx, hold_img.sy = b->sy, hold_img.ax = b->ax, hold_img.ay = b->ay;
-    vk_full_barrier(cb);
-    VkImageCopy r = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
-                     .extent = {b->width, b->height, 1}};
-    rec_CmdCopyImage(cb, b->image, VK_IMAGE_LAYOUT_GENERAL, hold_img.image, VK_IMAGE_LAYOUT_GENERAL, 1, &r);
-    vk_full_barrier(cb);
-}
-static void hold_notice(int done, int total) {
-    static const float black[4] = {0, 0, 0, 1};
-    if (!hold_img.image || !ip_place.ok) return;
-    menu_notice(done, total);
-    if (vk_frame_begin(black)) {
-        VkCommandBuffer cb = vk_cmd();
-        vk_present_draw(cb, &hold_img, ip_place.vx, ip_place.vy, ip_place.vw, ip_place.vh, ip_place.pv);
-        menu_render((void *)cb, g_vk.sc_extent.width, g_vk.sc_extent.height);
-        vk_frame_end(NULL);
-    }
-    menu_notice(0, 0);
-}
 
 static int ip_mids(TexBackend *b, uint64_t frame) {  // (the in-betweens shown)
     static uint64_t prev_ns;
@@ -1945,9 +1937,9 @@ void backend_present_now(NvnTexture *t, uint64_t frame) {
     // interpolation only waited for
     static bool held;
     if (!(rq_on() ? rq_present_is_repeat() : direct_repeat)) {
-        extern bool vk_build_hold(void (*begin)(void), void (*notice)(int done, int total));
+        extern bool vk_build_hold(void);
         bool inter = interp_wanted() == INTERP_ON, h;
-        WAITING(h = vk_build_hold(hold_begin, inter ? NULL : hold_notice));
+        WAITING(h = vk_build_hold());
         held = h && !inter;
         if (!held) g_vk_shown = t;
     }
@@ -2318,6 +2310,9 @@ void ui_window_init(void) {
     create_swapchain();
     vk_exec_init();
     vk_shaders_init();
+    extern void vk_spirv_preload(void), vk_translations_preload(void);
+    vk_spirv_preload();  // (the shader caches' indexes, read before the first frame)
+    vk_translations_preload();
 }
 
 SDL_Window *ui_window(void) { return window; }
