@@ -1211,6 +1211,8 @@ bool vk_build_hold(void) {
                 (unsigned long long)(v[2] - was[2]), (v[3] - was[3]) / 1e6, (unsigned long long)(v[4] - was[4]), (v[5] - was[5]) / 1e6);
             memcpy(was, v, sizeof was);
         }
+        extern void bp_log(void);
+        bp_log();
         stat_skipped_held += waiting;
     }
     seen = cum_build_skips;
@@ -2103,25 +2105,64 @@ static bool spirv_strip_early_tests(uint32_t *w, size_t *nwords) {
     return false;
 }
 
+// (diagnostics, LARECOMP_BUILD_PROF=1) where build time goes, summed over all threads (ns) and logged with each held
+// frame: [0] SPIR-V loads, [1] reflection, [2] shader modules, [3] layouts, [4..7] library parts 0-3, [8] fast links,
+// [9] optimized links; bp_n: counts, bp_hit: parts the pipeline cache had
+static _Atomic uint64_t bp_ns[10], bp_n[10], bp_hit[4];
+static bool bp_on(void) {
+    static int v = -1;
+    if (v < 0) v = getenv("LARECOMP_BUILD_PROF") != NULL;
+    return v;
+}
+#define BP_T() (bp_on() ? SDL_GetTicksNS() : 0)
+#define BP_ADD(i, t) do { if (bp_on()) { atomic_fetch_add(&bp_ns[i], SDL_GetTicksNS() - (t)); atomic_fetch_add(&bp_n[i], 1); } } while (0)
+static _Atomic int lto_pending;
+void bp_log(void) {
+    if (!bp_on()) return;
+    static uint64_t was_ns[10], was_n[10], was_hit[4];
+    static const char *name[10] = {"spirv", "reflect", "modules", "layout", "vi", "pre", "fs", "fo", "link", "lto"};
+    char line[1024];
+    int o = snprintf(line, sizeof line, "[buildprof]");
+    for (int i = 0; i < 10; i++) {
+        uint64_t ns = atomic_load(&bp_ns[i]), n = atomic_load(&bp_n[i]);
+        if (n == was_n[i]) continue;
+        o += snprintf(line + o, sizeof line - (size_t)o, " %s %llu %.1f ms", name[i], (unsigned long long)(n - was_n[i]), (ns - was_ns[i]) / 1e6);
+        if (i >= 4 && i < 8) {
+            uint64_t h = atomic_load(&bp_hit[i - 4]);
+            o += snprintf(line + o, sizeof line - (size_t)o, " (%llu hit)", (unsigned long long)(h - was_hit[i - 4]));
+            was_hit[i - 4] = h;
+        }
+        o += snprintf(line + o, sizeof line - (size_t)o, ",");
+        was_ns[i] = ns, was_n[i] = n;
+    }
+    LOG("%s lto queued %d\n", line, atomic_load(&lto_pending));
+}
+
 static uint64_t hash_words(uint64_t h, const void *p, size_t n);
 static void compile_program(void *arg) {
     Prog *p = arg;
     uint64_t t0 = SDL_GetTicksNS();
     int bs = build_begin("modules vs/fs", p->code[0] ? p->code[0] : p->prep_vh, p->code[1] ? p->code[1] : p->prep_fh);
     size_t nv = 0, nf = 0;
+    uint64_t bt = BP_T();
     uint32_t *sv = p->vi->msl ? vk_glsl_to_spirv(p->vi->msl, STAGE_VERTEX, "vs", &nv) : vk_spirv_load(p->spv_key[0], &nv);
     uint32_t *sf = !sv ? NULL : p->fi->msl ? vk_glsl_to_spirv(p->fi->msl, STAGE_FRAGMENT, "fs", &nf) : vk_spirv_load(p->spv_key[1], &nf);
     size_t ng = 0;
     uint32_t *sg = !sf || !p->gi ? NULL : p->gi->msl ? vk_glsl_to_spirv(p->gi->msl, STAGE_GEOMETRY, "gs", &ng)
                                                      : vk_spirv_load(p->spv_key[2], &ng);
+    BP_ADD(0, bt);
     if (!sv || !sf || (p->gi && !sg)) { free(sv); free(sf); free(sg); atomic_store(&p->state, 2); build_end(bs); return; }
+    bt = BP_T();
     p->nbinds = vk_reflect(sv, nv, p->binds, MAX_BIND);
     p->nbinds += vk_reflect(sf, nf, p->binds + p->nbinds, MAX_BIND - p->nbinds);
     if (sg) p->nbinds += vk_reflect(sg, ng, p->binds + p->nbinds, MAX_BIND - p->nbinds);
+    BP_ADD(1, bt);
+    bt = BP_T();
     p->vs = vk_module(sv, nv);
     p->fs = vk_module(sf, nf);
     if (sg) p->gs = vk_module(sg, ng);
     if (spirv_strip_early_tests(sf, &nf)) p->fs_late = vk_module(sf, nf);
+    BP_ADD(2, bt);
     free(sv);
     free(sf);
     free(sg);
@@ -2129,8 +2170,10 @@ static void compile_program(void *arg) {
     free(p->vi->msl), p->vi->msl = NULL;
     free(p->fi->msl), p->fi->msl = NULL;
     if (p->gi) free(p->gi->msl), p->gi->msl = NULL;
+    bt = BP_T();
     mark_dynamic(p);
     p->layout = make_layout(p, 2, VK_SHADER_STAGE_VERTEX_BIT, VK_SHADER_STAGE_FRAGMENT_BIT);
+    BP_ADD(3, bt);
     atomic_fetch_add(&stat_compiles, 1);
     bool ok = p->vs && p->fs && (!p->gi || p->gs);
     if (!ok) LOG("[shader] vs/fs %llx %llx (gs %llx): shader module creation failed\n", (unsigned long long)p->code[0],
@@ -2947,7 +2990,15 @@ static VkResult gpl_part_make(int part, const PipeCI *c, VkPipeline *out) {
         pre[0] = c->stages[0], pre[1] = c->stages[2];
         pi.stageCount = 2, pi.pStages = pre;
     }
-    return vkCreateGraphicsPipelines(g_vk.dev, g_vk.pcache, 1, &pi, NULL, out);
+    VkPipelineCreationFeedback fb = {0};
+    VkPipelineCreationFeedbackCreateInfo fbi = {.sType = VK_STRUCTURE_TYPE_PIPELINE_CREATION_FEEDBACK_CREATE_INFO,
+                                                .pNext = li.pNext, .pPipelineCreationFeedback = &fb};
+    if (bp_on()) li.pNext = &fbi;
+    uint64_t bt = BP_T();
+    VkResult r = vkCreateGraphicsPipelines(g_vk.dev, g_vk.pcache, 1, &pi, NULL, out);
+    BP_ADD(4 + part, bt);
+    if (fb.flags & VK_PIPELINE_CREATION_FEEDBACK_APPLICATION_PIPELINE_CACHE_HIT_BIT) atomic_fetch_add(&bp_hit[part], 1);
+    return r;
 }
 
 // The parts' keys: what each one bakes in (pipe_ci_fill), the program by address
@@ -2973,7 +3024,10 @@ static VkResult gpl_link(VkPipeline lib[4], VkPipelineLayout layout, bool optimi
     VkPipelineLibraryCreateInfoKHR li = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LIBRARY_CREATE_INFO_KHR, .libraryCount = 4, .pLibraries = lib};
     VkGraphicsPipelineCreateInfo pi = {.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, .pNext = &li,
         .flags = optimized ? VK_PIPELINE_CREATE_LINK_TIME_OPTIMIZATION_BIT_EXT : 0, .layout = layout};
-    return vkCreateGraphicsPipelines(g_vk.dev, g_vk.pcache, 1, &pi, NULL, out);
+    uint64_t bt = BP_T();
+    VkResult r = vkCreateGraphicsPipelines(g_vk.dev, g_vk.pcache, 1, &pi, NULL, out);
+    BP_ADD(optimized ? 9 : 8, bt);
+    return r;
 }
 
 // The optimized links, one at a time on their own thread (newest first is no better: the queue is short)
@@ -2995,6 +3049,7 @@ static void *lto_thread(void *a) {
         // (the fast-linked one stays alive: command buffers recorded with it may still be in flight)
         if (gpl_link(j->lib, j->pp->k.prog->layout, true, &opt) == VK_SUCCESS) __atomic_store_n(&j->pp->pipe, opt, __ATOMIC_RELEASE);
         free(j);
+        atomic_fetch_sub(&lto_pending, 1);
     }
     return NULL;
 }
@@ -3009,6 +3064,7 @@ static void lto_queue(Pipe *pp, VkPipeline lib[4]) {
     LtoJob *j = calloc(1, sizeof *j);
     j->pp = pp;
     memcpy(j->lib, lib, sizeof j->lib);
+    atomic_fetch_add(&lto_pending, 1);
     pthread_mutex_lock(&lto_lock);
     if (lto_tail) lto_tail->next = j; else lto_head = j;
     lto_tail = j;
