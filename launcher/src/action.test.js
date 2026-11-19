@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { BUSY_PHASES, PHASE_LABEL, REBUILD_NOTE, SHADERS_NOTE, modsLocked, primaryAction, toolsMissing } from './action.js';
+import { BUSY_PHASES, PHASE_LABEL, REBUILD_NOTE, SHADERS_NOTE, UPDATE_WAIT, modsLocked, primaryAction, toolsMissing, updateNotice } from './action.js';
 
 const base = { running: false, phase: 'idle', game_dir: 'D:\dump', game_error: null, tools_missing: [], built: true, error: '' };
 
@@ -56,4 +56,37 @@ test('mods are left alone while the game runs or a build runs', () => {
   assert.equal(modsLocked({ ...base, phase: 'failed' }), false);
   assert.equal(modsLocked({ ...base, running: true }), true);
   for (const p of BUSY_PHASES) assert.equal(modsLocked({ ...base, phase: p }), true, p);
+});
+
+const release = { state: 'available', version: '0.3.3', notes: 'Fixes.', asset: 'u', digest: 'd' };
+
+test('an available update says its version, shows the notes and can be installed', () => {
+  const n = updateNotice({ ...base, packaged: true, update: release });
+  assert.deepEqual([n.kind, n.title, n.notes, n.canUpdate, n.hint], ['available', 'Version 0.3.3 is available', 'Fixes.', true, '']);
+});
+
+test('an update waits while the game or a build runs, and says why', () => {
+  for (const s of [{ ...base, running: true }, { ...base, phase: 'shaders' }]) {
+    const n = updateNotice({ ...s, packaged: true, update: release });
+    assert.deepEqual([n.canUpdate, n.hint], [false, UPDATE_WAIT]);
+  }
+});
+
+test('the other update states each have a line, and nothing shows when there is no update state', () => {
+  const at = (update) => updateNotice({ ...base, packaged: true, version: '0.3.2', update });
+  assert.deepEqual(at({ state: 'downloading', progress: 0.5 }), { kind: 'busy', title: 'Downloading the update', progress: 0.5, cancel: true });
+  assert.equal(at({ state: 'installing' }).kind, 'busy');
+  assert.deepEqual([at({ state: 'failed', msg: 'No.' }).kind, at({ state: 'failed', msg: 'No.' }).title], ['failed', 'No.']);
+  assert.equal(at({ state: 'up_to_date' }).title, 'You have the latest version (0.3.2).');
+  assert.equal(at({ state: 'checking' }).kind, 'checking');
+  assert.equal(at({ state: 'idle' }), null);
+  assert.equal(updateNotice({ ...base, packaged: false, update: release }), null, 'a source checkout is not updated');
+  assert.equal(updateNotice(null), null);
+});
+
+test('Play is not offered while an update downloads or installs', () => {
+  for (const state of ['downloading', 'installing']) {
+    assert.deepEqual(primaryAction({ ...base, update: { state } }), { label: 'Updating', act: null, busy: true });
+  }
+  assert.equal(primaryAction({ ...base, update: release }).act, 'play');
 });

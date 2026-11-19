@@ -2,7 +2,7 @@ import './style.css';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { open } from '@tauri-apps/plugin-dialog';
-import { BUSY_PHASES, PHASE_LABEL, REBUILD_NOTE, modsLocked, primaryAction, toolsMissing } from './action.js';
+import { BUSY_PHASES, PHASE_LABEL, REBUILD_NOTE, modsLocked, primaryAction, toolsMissing, updateNotice } from './action.js';
 
 const PAGES = [
   ['home', 'Home'],
@@ -54,6 +54,9 @@ const actions = {
   'open-game-log': () => call('open_path', { which: 'game_log' }),
   'open-crash-log': () => call('open_path', { which: 'crash_log' }),
   'dismiss-crash': () => call('dismiss_crash'),
+  update: () => call('start_update'),
+  'cancel-update': () => call('cancel_update'),
+  'check-update': () => call('check_update'),
 };
 
 const busy = (s) => BUSY_PHASES.includes(s.phase);
@@ -67,6 +70,26 @@ function progress(s) {
     <progress max="100" ${pct == null ? '' : `value="${pct}"`}></progress>
     <button class="btn sm" data-act="cancel">Cancel</button>
   </div>`;
+}
+
+// The update line for Home (only what there is to act on) or About (every state)
+function updateBlock(s, onHome) {
+  const n = updateNotice(s);
+  if (!n || (onHome && ['checking', 'current'].includes(n.kind))) return '';
+  if (n.kind === 'busy') {
+    const pct = n.progress == null ? null : Math.min(100, Math.round(n.progress * 100));
+    return `<h2>${esc(n.title)}</h2>
+      <progress max="100" ${pct == null ? '' : `value="${pct}"`}></progress>
+      ${n.cancel ? '<div class="row"><button class="btn sm" data-act="cancel-update">Cancel</button></div>' : ''}`;
+  }
+  if (n.kind !== 'available') {
+    const failed = n.kind === 'failed';
+    return `<p class="${failed ? 'bad' : ''}" role="${failed ? 'alert' : 'status'}">${esc(n.title)}</p>`;
+  }
+  return `<h2>${esc(n.title)}</h2>
+    <div class="row"><button class="btn primary" data-act="update" ${n.canUpdate ? '' : 'disabled'}>Update</button></div>
+    ${n.hint ? `<p class="fine">${esc(n.hint)}</p>` : ''}
+    ${n.notes ? `<details><summary>What's new</summary><pre class="notes">${esc(n.notes)}</pre></details>` : ''}`;
 }
 
 function crashCard(c) {
@@ -112,6 +135,7 @@ const views = {
       </div>
       ${a.detail ? `<p class="detail glass" role="alert">${esc(a.detail)}</p>` : ''}
       ${s.phase === 'failed' ? '<div class="home-actions"><button class="btn quiet" data-act="open-setup-log">Open setup log</button></div>' : ''}
+      ${updateBlock(s, true) ? `<section class="card glass update">${updateBlock(s, true)}</section>` : ''}
       ${crashCard(s.crash)}
       ${progress(s)}
       <p class="fine">Bring your own copy of the game. Nothing here contains or shares game files.</p>
@@ -168,6 +192,16 @@ const views = {
           <button class="btn quiet" data-act="open-game-log">Open game log</button>
         </div>
       </section>
+      <section class="card glass update">
+        <h2>Version ${esc(s.version)}</h2>
+        ${s.packaged ? `${updateBlock(s, false)}
+        <div class="row"><button class="btn" data-act="check-update" ${['checking', 'downloading', 'installing'].includes(s.update.state) ? 'disabled' : ''}>Check for updates</button></div>
+        <label class="field"><span>Update automatically</span>
+          <input type="checkbox" data-pref="auto_update" ${s.auto_update ? 'checked' : ''} /></label>
+        <label class="field"><span>Only update to stable versions</span>
+          <input type="checkbox" data-pref="stable_only" ${s.stable_only ? 'checked' : ''} /></label>
+        <p class="fine">Untick to also get beta versions: new fixes early, possibly less tested.</p>` : '<p class="fine">Updates are for the release folder.</p>'}
+      </section>
     </div>`;
   },
 };
@@ -213,6 +247,7 @@ document.addEventListener('click', (e) => {
   if (el && actions[el.dataset.act]) actions[el.dataset.act](el.dataset);
 });
 document.addEventListener('change', (e) => {
+  if (e.target.dataset?.pref) return call('set_pref', { key: e.target.dataset.pref, on: e.target.checked });
   if (e.target.dataset?.mod) return call('set_mod', { name: e.target.dataset.mod, on: e.target.checked });
   const key = e.target.dataset?.key;
   if (!key) return;
