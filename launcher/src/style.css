@@ -84,6 +84,15 @@ body:not([data-page='home']) #bg .scrim { background: rgba(20, 12, 36, 0.55); }
 .field select, .field input[type='range'] { width: 220px; accent-color: var(--accent); }
 .field select { padding: 6px 8px; border-radius: 8px; border: 1px solid var(--glass-line); background: rgba(20, 12, 36, 0.7); color: var(--ink); font: inherit; }
 .field input[type='checkbox'] { width: 18px; height: 18px; accent-color: var(--accent); }
+.field.off { opacity: 0.55; }
+.field output { width: 3.2em; text-align: right; font-variant-numeric: tabular-nums; color: var(--ink-soft); }
+.field input[type='range'] { width: 170px; }
+.tabs { display: flex; flex-wrap: wrap; gap: 4px; }
+.tab { padding: 6px 14px; border: 0; border-radius: 9px; background: none; color: var(--ink-soft); font: inherit; cursor: pointer; }
+.tab:hover { background: rgba(255, 255, 255, 0.08); color: var(--ink); }
+.tab[aria-pressed='true'] { background: rgba(255, 143, 177, 0.2); color: var(--ink); font-weight: 600; }
+.confirm { align-items: center; padding: 8px 14px; border: 1px solid var(--glass-line); border-radius: var(--radius); background: var(--glass); }
+.confirm span { flex: 1; min-width: 200px; }
 .mod { gap: 8px; }
 .mod-name { flex: 1; min-width: 0; overflow-wrap: anywhere; user-select: text; }
 .mod.off .mod-name { color: var(--ink-soft); text-decoration: line-through; }

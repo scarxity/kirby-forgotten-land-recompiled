@@ -36,7 +36,8 @@ export const PHASE_LABEL = {
   shaders: 'Preparing shaders',
 };
 
-// Mods are read when the game starts and the mods folder may be in use by the setup: leave them alone meanwhile.
+// Mods are read when the game starts and the mods folder may be in use by the setup: leave them alone meanwhile. The
+// settings follow the same rule, as the game rewrites larecomp.ini while it runs.
 export function modsLocked(s) {
   return s.running || BUSY_PHASES.includes(s.phase);
 }
