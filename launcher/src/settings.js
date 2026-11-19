@@ -15,7 +15,7 @@ const offCorners = [['off', 'Off'], ['top_left', 'Top left'], ['top_right', 'Top
 // file onto an option. `needs` greys the row out while another row has the wrong value, as the menu does. `pref` rows
 // are the launcher's own (launcher-prefs.json), not the game's.
 export const ROWS = [
-  { key: 'aspect', label: 'Aspect ratio', tab: 'display', kind: 'choice', options: [['unlocked', 'Unlocked'], ['original', 'Original 16:9']], default: 'unlocked' },
+  { key: 'aspect', label: 'Aspect ratio', tab: 'display', kind: 'choice', options: [['unlocked', 'Unlocked'], ['original', 'Original 16:9']], default: 'original' },
   { key: 'fullscreen', label: 'Fullscreen', tab: 'display', kind: 'toggle', default: '0' },
   { key: 'show_fps', label: 'Show FPS', tab: 'display', kind: 'choice', options: offCorners, default: 'off', read: (raw) => (parseInt(raw, 10) ? 'top_right' : 'off') },
   { key: 'fps_advanced', label: 'Show advanced information', tab: 'display', kind: 'toggle', default: '0', needs: { key: 'show_fps', not: 'off' } },
@@ -40,7 +40,7 @@ export const ROWS = [
   { key: 'shadows', label: 'Shadows', tab: 'graphics', section: 'Rendering', kind: 'choice', options: [['off', 'Off'], ['0.5x', '0.5x'], ['default', 'Default'], ['2x', '2x'], ['3x', '3x'], ['4x', '4x']], default: 'default', read: (raw) => (raw === 'high' ? '2x' : 'default') },
   { key: 'frame_interp', label: 'Frame Generation', tab: 'graphics', section: 'Experimental', kind: 'toggle', default: '0' },
 
-  { key: 'volume', label: 'Volume', tab: 'audio', section: 'Volume', kind: 'slider', min: 0, max: 2, step: 0.05, default: '1.00' },
+  { key: 'volume', label: 'Volume', tab: 'audio', section: 'Volume', kind: 'slider', min: 0, max: 1, step: 0.05, default: '1.00' },
   { key: 'audio_output', label: 'Output', tab: 'audio', section: 'Volume', kind: 'choice', options: [['stereo', 'Stereo'], ['5.1', '5.1']], default: 'stereo' },
   { key: 'movie_audio', label: 'Movie audio', tab: 'audio', section: 'Volume', kind: 'toggle', default: '1' },
   { key: 'reverb', label: 'Enable reverb', tab: 'audio', section: 'Effects', kind: 'toggle', default: '1' },
@@ -49,8 +49,7 @@ export const ROWS = [
   { key: 'rumble_strength', label: 'Rumble intensity', tab: 'controls', kind: 'choice', options: [['25', '25%'], ['50', '50%'], ['75', '75%'], ['100', '100%']], default: '100', needs: { key: 'rumble', is: '1' } },
   { key: 'prompts', label: 'Button icons', tab: 'controls', kind: 'choice', options: [['auto', 'Auto'], ['nintendo', 'Nintendo'], ['xbox', 'Xbox'], ['playstation', 'PlayStation']], default: 'auto' },
   { key: 'face_buttons_by_label', label: 'Button layout', tab: 'controls', kind: 'choice', options: [['0', 'Switch'], ['1', 'Xbox / PlayStation']], default: '0' },
-  // On except on macOS, where it needs a permission (runtime/settings.c)
-  { key: 'background_input', label: 'Allow background inputs', tab: 'controls', kind: 'toggle', default: '1' },
+  { key: 'background_input', label: 'Allow background inputs', tab: 'controls', kind: 'toggle', default: '0' },
 
   {
     key: 'language', label: 'Language', tab: 'general', kind: 'choice', default: 'auto',
@@ -63,7 +62,8 @@ export const ROWS = [
 
 export const rowsOf = (tab) => ROWS.filter((r) => r.tab === tab);
 
-// The row's value as the game would read it: a missing, empty or unknown entry is the default.
+// The row's value as the game would read it: a missing, empty or unknown entry is the default. A slider shows a saved
+// value past its end (the game still plays up to 200%) at its end, and nothing is written until the player moves it.
 export function valueOf(row, ini, prefs) {
   if (row.pref) return typeof prefs?.[row.key] === 'boolean' ? (prefs[row.key] ? '1' : '0') : row.default;
   const raw = ini[row.key] || row.default;

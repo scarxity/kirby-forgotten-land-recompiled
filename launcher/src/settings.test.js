@@ -55,8 +55,27 @@ test('toggles are atoi and the volume is a clamped float', () => {
   assert.equal(get('fullscreen', { fullscreen: '0' }), '0');
   assert.equal(get('reverb', { reverb: '' }), '1');
   assert.equal(get('volume', { volume: '0.35' }), '0.35');
-  assert.equal(get('volume', { volume: '9' }), '2.00');
+  assert.equal(get('volume', { volume: '9' }), '1.00');
+  assert.equal(get('volume', { volume: '-1' }), '0.00');
   assert.equal(get('volume', { volume: 'loud' }), '1.00');
+});
+
+test('a saved volume above 100% is shown at the top of the slider and left as it is', () => {
+  const ini = { volume: '1.50' };
+  assert.equal(get('volume', ini), '1.00');
+  assert.deepEqual(ini, { volume: '1.50' });
+  assert.equal(row('volume').max, 1);
+  assert.equal(row('volume').step, 0.05);
+});
+
+test('the defaults are the ones the game uses with no key: original 16:9, background input off', () => {
+  assert.equal(get('aspect'), 'original');
+  assert.equal(get('aspect', { aspect: 'unlocked' }), 'unlocked');
+  assert.equal(get('background_input'), '0');
+  assert.equal(get('background_input', { background_input: '1' }), '1');
+  const c = readFileSync(new URL('../../runtime/settings.c', import.meta.url), 'utf8');
+  assert.match(c, /\.aspect = ASPECT_ORIGINAL,/);
+  assert.doesNotMatch(c, /\.bg_input = true/);
 });
 
 test('the launcher own preference is read from the prefs, not the ini', () => {
