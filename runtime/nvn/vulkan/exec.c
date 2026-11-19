@@ -2399,6 +2399,12 @@ static void prep_put(PrepEnt **t, size_t *cap, size_t *n, uint64_t key, void *ob
 }
 #define PREP_GET(tab, key) ({ pthread_mutex_lock(&prep_lock); void *o_ = prep_get(tab, tab##_cap, key); pthread_mutex_unlock(&prep_lock); o_; })
 #define PREP_PUT(tab, key, obj) do { pthread_mutex_lock(&prep_lock); prep_put(&tab, &tab##_cap, &tab##_n, key, obj); pthread_mutex_unlock(&prep_lock); } while (0)
+static void *prep_put_new(PrepEnt **t, size_t *cap, size_t *n, uint64_t key, void *obj) {  // the object there after
+    void *o = prep_get(*t, *cap, key);
+    if (!o) prep_put(t, cap, n, key, obj), o = obj;
+    return o;
+}
+#define PREP_PUT_NEW(tab, key, obj) ({ pthread_mutex_lock(&prep_lock); void *o_ = prep_put_new(&tab, &tab##_cap, &tab##_n, key, obj); pthread_mutex_unlock(&prep_lock); o_; })
 
 // The kinds of the targets the fragment shader writes only (its header's output map, as the translator reads it):
 // a target it doesn't write gets no output in the code, so its kind can't change the program (translate.c). A draw
@@ -2484,10 +2490,14 @@ static Prog *get_program_(NvnProgram *np, ShaderKey *vkey, ShaderKey *fkey) {
         prog_fp_check(prog_tab[slot].prog, np);
         return prog_tab[slot].prog;
     }
-    if (!gs && !vs_only) {  // prepared before the game (the same code and keys; vertex + fragment only)
+    // Prepared before the game, or met before at another address: found by content (the same code and keys; vertex +
+    // fragment only). The game loads the same shaders at several addresses (each model's archive has its own copy):
+    // an area's first frame met 414 programs of ~170 contents, each set up and its pipelines built again.
+    uint64_t ck = 0;
+    if (!gs && !vs_only) {
         uint64_t vh = shader_stage_hash(&np->stages[0]), fh = shader_stage_hash(&np->stages[1]);
-        uint64_t ck = prog_content_key(vh, fh, vkey, fkey);
-        Prog *pp = vh && fh && prep_progs_n ? PREP_GET(prep_progs, ck) : NULL;
+        ck = vh && fh ? prog_content_key(vh, fh, vkey, fkey) : 0;
+        Prog *pp = ck && prep_progs_n ? PREP_GET(prep_progs, ck) : NULL;
         if (pp) {
             prog_tab[slot].key = h;
             prog_tab[slot].prog = pp;
@@ -2500,6 +2510,7 @@ static Prog *get_program_(NvnProgram *np, ShaderKey *vkey, ShaderKey *fkey) {
     prog_fp_check(p, np);  // (takes the fingerprint)
     prog_tab[slot].key = h;
     prog_tab[slot].prog = p;
+    if (ck) PREP_PUT_NEW(prep_progs, ck, p);
     for (int i = 0; i < (gs ? 3 : 2); i++) {
         p->code[i] = np->stages[i].code_addr;
         p->cmax[i] = np->stages[i].const_offset ? np->stages[i].const_offset : 0x10000;
@@ -3038,6 +3049,7 @@ static pthread_cond_t lto_cond = PTHREAD_COND_INITIALIZER;
 static void *lto_thread(void *a) {
     (void)a;
     plat_thread_default_core();
+    plat_thread_background();
     for (;;) {
         pthread_mutex_lock(&lto_lock);
         while (!lto_head) pthread_cond_wait(&lto_cond, &lto_lock);
@@ -3045,6 +3057,8 @@ static void *lto_thread(void *a) {
         lto_head = j->next;
         if (!lto_head) lto_tail = NULL;
         pthread_mutex_unlock(&lto_lock);
+        // (an optimized link is a whole compile, 100-500 ms: one running beside an area's first builds doubled them)
+        while (atomic_load(&jobs_pending) > 0) { struct timespec ts = {0, 2000000}; nanosleep(&ts, NULL); }
         VkPipeline opt;
         // (the fast-linked one stays alive: command buffers recorded with it may still be in flight)
         if (gpl_link(j->lib, j->pp->k.prog->layout, true, &opt) == VK_SUCCESS) __atomic_store_n(&j->pp->pipe, opt, __ATOMIC_RELEASE);

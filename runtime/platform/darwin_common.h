@@ -118,6 +118,8 @@ void plat_thread_guest(int prio) {
     if (on) pthread_set_qos_class_self_np(prio <= 44 ? QOS_CLASS_USER_INTERACTIVE : QOS_CLASS_USER_INITIATED, 0);
 }
 
+void plat_thread_background(void) { pthread_set_qos_class_self_np(QOS_CLASS_UTILITY, 0); }
+
 bool plat_exe_path(char *buf, size_t size) {
     uint32_t len = (uint32_t)size;
     return _NSGetExecutablePath(buf, &len) == 0;
