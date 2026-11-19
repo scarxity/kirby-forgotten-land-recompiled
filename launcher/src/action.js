@@ -37,12 +37,14 @@ export const PHASE_LABEL = {
   shaders: 'Preparing shaders',
 };
 
+export const UPDATE_MANAGED = 'Updates come from RecompLauncher for this copy.';
 export const UPDATE_WAIT = 'Close the game, or wait for the build or the shader preparation to finish, to update.';
 
 // What Home and About say about updates, from the backend status. Null when there is nothing to say.
 export function updateNotice(s) {
   const u = s?.update;
   if (!s?.packaged || !u) return null;
+  if (s.managed) return { kind: 'managed', title: UPDATE_MANAGED };
   switch (u.state) {
     case 'available': {
       const locked = modsLocked(s);

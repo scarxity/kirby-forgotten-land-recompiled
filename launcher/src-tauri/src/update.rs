@@ -200,6 +200,33 @@ pub fn check(u: &Updater, work: &Path, manual: bool) {
     });
 }
 
+/// RecompLauncher keeps its library (every game it installed, with its folder) here, under its own data folder.
+const RECOMPLAUNCHER_DATA: &str = "com.recomplauncher.app";
+
+/// A folder the way RecompLauncher compares them (its `same_path`): slash direction, a trailing slash and letter case do not matter.
+fn norm(p: &Path) -> String {
+    let s = fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf()).to_string_lossy().replace('\\', "/");
+    s.trim_start_matches("//?/").trim_end_matches('/').to_lowercase()
+}
+
+/// Whether RecompLauncher's library (library.json) lists `work` as the folder of a game it installed, or a folder inside one.
+/// A build the player added from a folder (`local`) is never updated by RecompLauncher, so it does not count.
+pub fn managed_by_recomplauncher(library_json: &str, work: &Path) -> bool {
+    let Ok(lib) = serde_json::from_str::<Value>(library_json) else { return false };
+    let Some(games) = lib.get("installed").and_then(Value::as_object) else { return false };
+    let work = norm(work);
+    games.values().filter(|g| !g.get("local").and_then(Value::as_bool).unwrap_or(false)).filter_map(|g| g.get("path")?.as_str()).any(|path| {
+        let path = norm(Path::new(path));
+        !path.is_empty() && (work == path || work.starts_with(&format!("{path}/")))
+    })
+}
+
+/// True when RecompLauncher on this PC installed this copy, so RecompLauncher is what updates it.
+pub fn managed(work: &Path) -> bool {
+    let Some(appdata) = std::env::var_os("APPDATA") else { return false };
+    fs::read_to_string(Path::new(&appdata).join(RECOMPLAUNCHER_DATA).join("library.json")).is_ok_and(|t| managed_by_recomplauncher(&t, work))
+}
+
 /// The folder the last update used: the old files wait there because the running exe cannot be deleted.
 pub fn cleanup(work: &Path) {
     let _ = fs::remove_dir_all(work.join(STAGING));
@@ -351,6 +378,34 @@ mod tests {
         let _ = fs::remove_dir_all(&p);
         fs::create_dir_all(&p).unwrap();
         p
+    }
+
+    const LIBRARY: &str = r#"{"format":2,"installed":{
+        "kirby-forgotten-land-recompiled":{"id":"kirby-forgotten-land-recompiled","repo":"scarxity/kirby-forgotten-land-recompiled","tag":"v0.3.2","path":"C:\\Recomp Library\\Kirby"},
+        "mine":{"id":"mine","local":true,"tag":"own","path":"D:\\dev\\kfl"},
+        "other":{"id":"other","tag":"v1","path":"C:\\Recomp Library\\Other"}},
+        "settings":{"library_dir":"C:\\Recomp Library"}}"#;
+
+    #[test]
+    fn a_copy_in_a_recomplauncher_game_folder_is_managed() {
+        for work in [r"C:\Recomp Library\Kirby", r"c:/recomp library/kirby/", r"C:\Recomp Library\Kirby\ForgottenLandRecomp-0.3.2"] {
+            assert!(managed_by_recomplauncher(LIBRARY, Path::new(work)), "{work}");
+        }
+    }
+
+    #[test]
+    fn other_folders_are_not_managed() {
+        for work in [r"C:\Recomp Library", r"C:\Recomp Library\Kirby2", r"E:\Games\Kirby", r"D:\dev\kfl"] {
+            assert!(!managed_by_recomplauncher(LIBRARY, Path::new(work)), "{work}");
+        }
+    }
+
+    #[test]
+    fn an_unreadable_or_empty_library_manages_nothing() {
+        let work = Path::new(r"C:\Recomp Library\Kirby");
+        for text in ["", "{broken", "{}", r#"{"installed":[]}"#, r#"{"installed":{"x":{"path":""}}}"#, r#"{"installed":{"x":{"tag":"v1"}}}"#] {
+            assert!(!managed_by_recomplauncher(text, work), "{text}");
+        }
     }
 
     #[test]

@@ -75,7 +75,7 @@ function progress(s) {
 // The update line for Home (only what there is to act on) or About (every state)
 function updateBlock(s, onHome) {
   const n = updateNotice(s);
-  if (!n || (onHome && ['checking', 'current'].includes(n.kind))) return '';
+  if (!n || (onHome && ['checking', 'current', 'managed'].includes(n.kind))) return '';
   if (n.kind === 'busy') {
     const pct = n.progress == null ? null : Math.min(100, Math.round(n.progress * 100));
     return `<h2>${esc(n.title)}</h2>
@@ -194,7 +194,7 @@ const views = {
       </section>
       <section class="card glass update">
         <h2>Version ${esc(s.version)}</h2>
-        ${s.packaged ? `${updateBlock(s, false)}
+        ${s.managed ? updateBlock(s, false) : s.packaged ? `${updateBlock(s, false)}
         <div class="row"><button class="btn" data-act="check-update" ${['checking', 'downloading', 'installing'].includes(s.update.state) ? 'disabled' : ''}>Check for updates</button></div>
         <label class="field"><span>Update automatically</span>
           <input type="checkbox" data-pref="auto_update" ${s.auto_update ? 'checked' : ''} /></label>

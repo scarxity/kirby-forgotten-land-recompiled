@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { BUSY_PHASES, PHASE_LABEL, REBUILD_NOTE, SHADERS_NOTE, UPDATE_WAIT, modsLocked, primaryAction, toolsMissing, updateNotice } from './action.js';
+import { BUSY_PHASES, PHASE_LABEL, REBUILD_NOTE, SHADERS_NOTE, UPDATE_MANAGED, UPDATE_WAIT, modsLocked, primaryAction, toolsMissing, updateNotice } from './action.js';
 
 const base = { running: false, phase: 'idle', game_dir: 'D:\dump', game_error: null, tools_missing: [], built: true, error: '' };
 
@@ -82,6 +82,13 @@ test('the other update states each have a line, and nothing shows when there is 
   assert.equal(at({ state: 'idle' }), null);
   assert.equal(updateNotice({ ...base, packaged: false, update: release }), null, 'a source checkout is not updated');
   assert.equal(updateNotice(null), null);
+});
+
+test('a copy RecompLauncher manages says so and offers no update, whatever state the backend is in', () => {
+  for (const update of [release, { state: 'up_to_date' }, { state: 'failed', msg: 'No.' }, { state: 'idle' }]) {
+    assert.deepEqual(updateNotice({ ...base, packaged: true, managed: true, update }), { kind: 'managed', title: UPDATE_MANAGED });
+  }
+  assert.equal(UPDATE_MANAGED, 'Updates come from RecompLauncher for this copy.');
 });
 
 test('Play is not offered while an update downloads or installs', () => {

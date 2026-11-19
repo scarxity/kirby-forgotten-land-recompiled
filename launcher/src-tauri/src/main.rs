@@ -227,6 +227,8 @@ struct App {
     /// The runtime's verdict, with the times of the files it was made from.
     code: Mutex<Option<([Option<SystemTime>; 5], Code)>>,
     updater: update::Updater,
+    /// RecompLauncher installed this copy and updates it itself: this launcher neither checks nor installs updates.
+    managed: bool,
 }
 
 #[derive(Serialize)]
@@ -251,6 +253,8 @@ struct Status {
     /// Play prepares the shaders first (shader_stamp)
     shaders_ready: bool,
     update: update::Update,
+    /// RecompLauncher updates this copy (see App::managed)
+    managed: bool,
     version: &'static str,
     auto_update: bool,
     stable_only: bool,
@@ -388,6 +392,11 @@ fn keep_crash_log(work: &Path) -> String {
 }
 
 impl App {
+    /// The release folder, and not a copy RecompLauncher manages: the only place this launcher updates itself.
+    fn updates_here(&self) -> bool {
+        matches!(self.mode, Mode::Packaged) && !self.managed
+    }
+
     // true while the game runs; when it has just ended, records a crash for the status
     fn poll_game(&self) -> bool {
         let mut g = self.game.lock().unwrap();
@@ -645,6 +654,7 @@ fn status(app: St) -> Status {
         packaged: matches!(app.mode, Mode::Packaged),
         shaders_ready: app.shaders_ready(),
         update: app.updater.state(),
+        managed: app.managed,
         version: env!("CARGO_PKG_VERSION"),
         auto_update: update::pref(&app.work, update::AUTO_KEY, false),
         stable_only: update::pref(&app.work, update::STABLE_KEY, true),
@@ -1021,8 +1031,8 @@ fn update_blocked(app: &App) -> Option<String> {
 
 /// Downloads and installs the update that was found, then starts the new launcher in place of this one.
 fn begin_update(app: &Arc<App>, handle: &tauri::AppHandle) -> Result<(), String> {
-    if !matches!(app.mode, Mode::Packaged) {
-        return Err("Updates are for the release folder.".into());
+    if !app.updates_here() {
+        return Err("Updates are for the release folder, and not for a copy RecompLauncher manages.".into());
     }
     if let Some(why) = update_blocked(app) {
         return Err(why);
@@ -1051,7 +1061,7 @@ fn cancel_update(app: St) {
 
 #[tauri::command(async)]
 fn check_update(app: St) {
-    if matches!(app.mode, Mode::Packaged) {
+    if app.updates_here() {
         update::check(&app.updater, &app.work, true);
     }
 }
@@ -1062,7 +1072,7 @@ fn set_pref(app: St, key: String, on: bool) -> Result<(), String> {
         return Err("Unknown preference.".into());
     }
     update::set_pref(&app.work, &key, on)?;
-    if key == update::STABLE_KEY && matches!(app.mode, Mode::Packaged) {
+    if key == update::STABLE_KEY && app.updates_here() {
         // the channel changed: what is offered changes with it
         let app = Arc::clone(&app);
         std::thread::spawn(move || update::check(&app.updater, &app.work, true));
@@ -1115,6 +1125,7 @@ fn main() {
         Mode::Packaged => exe_dir,
     };
     let work = fs::canonicalize(&work).map(|p| PathBuf::from(p.to_string_lossy().trim_start_matches(r"\\?\"))).unwrap_or(work);
+    let managed = matches!(mode, Mode::Packaged) && update::managed(&work);
     let app = Arc::new(App {
         work_problem: work_problem(&mode, &work),
         work,
@@ -1125,13 +1136,14 @@ fn main() {
         pick_error: Mutex::new(String::new()),
         code: Mutex::new(None),
         updater: update::Updater::default(),
+        managed,
     });
     let on_start = Arc::clone(&app);
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(app)
         .setup(move |t| {
-            if matches!(on_start.mode, Mode::Packaged) {
+            if on_start.updates_here() {
                 let handle = t.handle().clone();
                 std::thread::spawn(move || update_on_start(on_start, handle));
             }
@@ -1161,7 +1173,18 @@ mod tests {
             pick_error: Mutex::new(String::new()),
             code: Mutex::new(None),
             updater: update::Updater::default(),
+            managed: false,
         }
+    }
+
+    #[test]
+    fn only_an_unmanaged_release_folder_updates_itself() {
+        let mut a = app(r"E:\a\repo", r"E:\a\work");
+        assert!(!a.updates_here(), "a source checkout is not updated");
+        a.mode = Mode::Packaged;
+        assert!(a.updates_here());
+        a.managed = true;
+        assert!(!a.updates_here(), "RecompLauncher updates its own installs");
     }
 
     #[test]
