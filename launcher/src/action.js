@@ -18,7 +18,7 @@ export function primaryAction(s) {
   return { label: 'Play', act: 'play' };
 }
 
-export const SHADERS_NOTE = 'Play prepares the shaders first, about 8 minutes, so nothing is compiled while you play. It happens again only after a graphics driver or mod change.';
+export const SHADERS_NOTE = 'Play prepares the shaders first, about 8 minutes, so nothing is compiled while you play. It happens again only after an update, a graphics driver change or a mod change.';
 
 export const REBUILD_NOTE = 'The game code was built by another version of this program. Build it again to play. It takes about 7 minutes on a 16-thread PC.';
 

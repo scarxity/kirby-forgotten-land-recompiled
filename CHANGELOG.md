@@ -17,6 +17,9 @@ Versions are tagged `vX.Y.Z`. Small fixes bump the last number; features and lar
 Kirby runs its 3D at 30 fps, as on the original Switch: 60 fps there is the Switch 2 Edition's, a different program.
 The game's menus run at 60.
 
+Unzip over 0.3.2: the game code from 0.3.2 is used as it is; the first Play prepares the shaders again (about 8
+minutes), with the pipelines your earlier plays recorded.
+
 ### Added
 - The launcher's Settings page has tabs (Display, Graphics, Audio, Controls, General, Mods, Game) with the in-game
   menu's settings, so they can be set before the game starts. The in-game menu is unchanged; both write `larecomp.ini`.
