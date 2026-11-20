@@ -93,7 +93,8 @@ def check(root):
 
     # the settings both launchers write must be ones the runtime reads
     keys = set(SETTING_READS.findall(read(root, 'runtime/settings.c')))
-    written = set(re.findall(r'"(\w+)"', rust_const(rs, 'SETTING_KEYS')))
+    # (rows marked pref: true are the launcher's own, in launcher-prefs.json)
+    written = {m[0] for m in re.findall(r"\bkey: '(\w+)'([^\n]*)", read(root, 'launcher/src/settings.js')) if 'pref: true' not in m[1]}
     for s in man['settings']:
         written |= {k for c in s.get('choices', []) for k in c['set']} | set(s.get('defaults', {}))
         if 'slider' in s:

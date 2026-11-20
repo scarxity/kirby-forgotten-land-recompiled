@@ -1,0 +1,56 @@
+# Shader list collection: every week and on demand, the shader variant records players attached to issues labelled
+# "log: new shaders" (tools/log_triage.py puts the label on) are merged into runtime/nvn/shader_variants.txt, and when
+# that adds records, one pull request from the branch shader-list/collect carries them. Nothing is merged
+# automatically: a person reads the pull request (its text lists the counts and the issue numbers).
+#
+# Security: no issue or comment text is ever put into this file's expressions or a shell, or into the pull request's
+# text. The script reads the issues through the API, downloads the attached files with log_triage.py's rules (GitHub's
+# attachment host only, a size cap each) and only parses them; tools/shader_list_merge.py lets only lines of the record
+# shape in, and tools/ci/no_game_data.sh checks the list again before anything is committed. Permissions are the least
+# the job needs: issues read, and contents / pull requests write for the branch and its pull request (the repository's
+# Settings > Actions > General must allow Actions to create pull requests). The default branch's code runs; a dispatch
+# runs the dispatched branch's, as a dry run unless the input says otherwise (a dry run reads and merges in the runner,
+# and writes nothing to GitHub). No pull request code is ever checked out.
+#
+# A pull request opened with the workflow token starts no CI run of its own: close and reopen it (or push to the branch)
+# to run CI before merging.
+name: Shader list collection
+on:
+  schedule:
+    - cron: '17 4 * * 1'  # Mondays
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Show what would be committed, open no pull request
+        type: boolean
+        default: true
+permissions:
+  contents: write
+  pull-requests: write
+  issues: read
+concurrency:
+  group: shader-collect
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6.1.0
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.ref || github.event.repository.default_branch }}
+          persist-credentials: false
+      - name: Gather and merge the records
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
+        run: python3 -I tools/shader_collect.py collect
+      - name: The list holds only records
+        run: bash tools/ci/no_game_data.sh
+      - name: Open or update the pull request
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          BASE: ${{ github.event.repository.default_branch }}
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
+        run: python3 -I tools/shader_collect.py publish

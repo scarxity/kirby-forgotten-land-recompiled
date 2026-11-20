@@ -66,7 +66,9 @@ static bool level_check(uint64_t now, uint64_t *changed_at, char *name, size_t n
         *changed_at = now;
     }
     if (name) snprintf(name, n, "%s", last);
-    return game_in_play() != 0;
+    // a game layer that doesn't name its levels ("-": Kirby, hle/game_state.c) can't tell play from loads: every slow
+    // frame is logged, or none of the player's freezes ever would be
+    return game_in_play() != 0 || !strcmp(lv, "-");
 }
 
 void slow_frame_present(uint64_t now, uint64_t gcpu) {

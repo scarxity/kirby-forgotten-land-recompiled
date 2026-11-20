@@ -38,7 +38,7 @@ const char *touch_control_name(int i) {
 }
 
 Settings g_settings = {
-    .aspect = ASPECT_UNLOCKED,
+    .aspect = ASPECT_ORIGINAL,
     .dyn_min = 540,
     .fullscreen = false,
     .volume = 1.0f,
@@ -55,9 +55,6 @@ Settings g_settings = {
     .upscaler_auto = true,
     .shadow_quality = SHADOW_DEFAULT,
     .res_auto = true,
-#ifndef __APPLE__
-    .bg_input = true,  // (as before the setting; on macOS it needs Input Monitoring permission, so Off there)
-#endif
 };
 
 // The game's own text languages: its RomFS carries these per region (regionUS/USen|USes|USfr, regionEU/EUen|EUes|...,

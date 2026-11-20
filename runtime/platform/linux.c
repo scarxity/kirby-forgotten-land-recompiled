@@ -334,6 +334,7 @@ static void pcore_guest(void);
 // A guest thread: with big and little cores, on the big ones with the frame's other critical threads (pcore_guest);
 // otherwise the OS's default scheduling serves the game here
 void plat_thread_guest(int prio) { (void)prio; pcore_guest(); }
+void plat_thread_background(void) { setpriority(PRIO_PROCESS, (id_t)syscall(SYS_gettid), 10); }  // (nice: per thread on Linux)
 
 // The frame's critical threads on the big cores of a big.LITTLE / hybrid CPU. The scheduler places a thread by its
 // recent load, so the game or render thread, idle for part of each frame, often lands on a little core: on an RK3588

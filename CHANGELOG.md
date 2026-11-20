@@ -2,6 +2,62 @@
 
 Versions are tagged `vX.Y.Z`. Small fixes bump the last number; features and large fixes bump the middle one.
 
+## 0.3.3
+
+**No shader freezes in our tests, even on a first visit.**
+- **Installed with RecompLauncher:** shaders were never prepared, so every new object froze the picture while it was
+  built: 20 to 30 fps with freezes of up to 2.4 s in the first stage. RecompLauncher's setup now prepares them too
+  ("Preparing shaders", about 15 minutes, once).
+- **Entering a new area:** the game hands over its shaders when a stage loads; they are now set up in the background
+  from that moment, not at the first frame that draws them.
+- **Shaders the game files can't predict** (models whose vertex data is integer, textures read as integers) are built
+  in every possible variant during "Preparing shaders" now, and this version ships a list of shader variant records
+  recorded from test play (33 stages): one-way hashes and draw settings, never shader code. The prepare step finds the
+  shaders by those hashes in your own game files and builds them before play. Each pipeline built during play is also
+  remembered and built ahead on every later start.
+- Measured on an RTX 3050 Laptop (Frame Generation off), first stage with its three guide clips, about 9 minutes, a
+  first play: shader pauses of 50 ms or more went from 8-10 (the longest 114 ms) to 0 in 2 of 3 runs and one of 52 ms in
+  the third.
+
+"Preparing shaders" takes longer: about 15 minutes instead of 10 on that laptop, and the `cache` folder grows by about
+0.7 GB (to about 2.8 GB).
+
+Kirby runs its 3D at 30 fps, as on the original Switch: 60 fps there is the Switch 2 Edition's, a different program.
+The game's menus run at 60.
+
+Unzip over 0.3.2: the game code from 0.3.2 is used as it is. The launcher shows **Set up**, which prepares the shaders
+again (about 15 minutes, with the pipelines your earlier plays recorded); then Play.
+
+### Added
+- The launcher's Settings page has tabs (Display, Graphics, Audio, Controls, General, Mods, Game) with the in-game
+  menu's settings, so they can be set before the game starts. The in-game menu is unchanged; both write `larecomp.ini`.
+  Each tab has Restore defaults. Settings can't be changed while the game runs
+- Updates inside the launcher: it checks GitHub's releases when it starts, and About and Home show the new version, what
+  changed and an **Update** button. "Update automatically" (off by default) installs it by itself. "Only update to
+  stable versions" (on by default) leaves out test versions. The download's checksum is checked, and your game files,
+  game code, shaders, mods, saves and settings are never replaced. Copies installed by RecompLauncher are updated by
+  RecompLauncher, so the launcher doesn't check there
+- Game tab: open the saves folder, and "Back up saves now" (the last 5 are kept in `save-backups`)
+- About: **Report a problem** opens the issue form in your browser and the folder with `game.log`. Attaching `game.log`
+  (and `cache\shader_seen.txt` for stutter) lets us add the shaders you met to the next release's list
+- "Minimise launcher while playing" (General)
+
+### Changed
+- A .nsp or .xci picked as the game says how to extract it (in an emulator set up with your own keys)
+- Without a saved setting, the game now starts with the aspect ratio on Original 16:9 and "Allow background inputs"
+  off. Saved settings are kept. The launcher's volume goes from 0 to 100% (the in-game menu still goes to 200%)
+- The game's log names what each slow frame was spent on
+
+### Known issues
+- A stage's first frame takes 0.1 to 0.3 s: it uploads the stage's textures (about 110 MB) as it fades in
+- The shipped list covers 33 stages from their first step; the town, the world map, the arena's other screens and
+  Level 3's third stage aren't in it yet (their shaders are still prepared, only the rare variants may pause once)
+- The small guide video at the bottom right in the first stage was reported black on one PC, also with Frame
+  Generation off; it freezes the game for 2 to 3 s when it ends there. It plays in every test run
+- Frame Generation is still experimental: in a test run it made frame pacing worse (the slowest frame of each 2 s rose
+  from 35-40 ms to 50-100 ms)
+- Intel GPUs are untested on 0.3.x
+
 ## 0.3.2
 
 0.3.1 was published for a few hours and withdrawn: it showed "Preparing graphics for this area... (first visit only)"

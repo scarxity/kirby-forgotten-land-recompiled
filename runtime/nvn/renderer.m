@@ -6203,6 +6203,8 @@ bool renderer_prepare_begin(void) {
 }
 
 int renderer_prepare_pending(void) { return g_prep_pending; }
+int renderer_prepare_added(void) { return 0; }
+void renderer_program_handover(const struct NvnProgram *p) { (void)p; }  // (Metal: programs are set up at their first draw)
 void renderer_prepare_end(void) {  // (the binary archive: saved now, off this thread - a PLAY waiting on the
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{ archive_save(false); });  // preparation doesn't wait for it)
     LOG("[metal] shader archive: %d pipelines loaded from it, %d added; ready after %.0f ms; library compiles %.0f ms, "

@@ -65,6 +65,7 @@ uint8_t shader_topo_class(uint32_t mode) { return mode == 0 ? 0 : mode == 1 || m
 // ------------------------------------------------------------------ text form
 // G vs=<hash> fs=<hash> f=<flags> a=<attrib,...> s=<stride/divisor,...> c=<format[:view],...> d=<depth> n=<samples>
 //   m=<channel mask> b=<blend enables> B=<blend state of each target, 16 hex digits,...> k=<a2c> t=<topology> p=<fill>
+//   [x=<integer texture slots: unsigned/signed>] (only when any)
 // C cs=<hash> l=<x,y,z>
 void shader_rec_format(const ShaderRec *r, char *out, size_t n) {
     size_t o = 0;
@@ -91,6 +92,7 @@ void shader_rec_format(const ShaderRec *r, char *out, size_t n) {
         for (int k = 0; k < 8; k++) PUT("%02x", r->blend[i][k]);
     }
     PUT(" k=%u t=%u p=%u", r->a2c, r->topo, r->poly_fill);
+    if (r->tex_uint || r->tex_sint) PUT(" x=%" PRIx64 "/%" PRIx64, r->tex_uint, r->tex_sint);
 #undef PUT
 }
 
@@ -177,6 +179,11 @@ bool shader_rec_parse(const char *line, ShaderRec *r) {
     if ((v = field(line, "k"))) r->a2c = (uint8_t)strtoul(v, NULL, 16);
     r->topo = (v = field(line, "t")) ? (uint8_t)strtoul(v, NULL, 16) : 2;
     r->poly_fill = (v = field(line, "p")) ? (uint8_t)strtoul(v, NULL, 16) : 1;
+    if ((v = field(line, "x"))) {
+        char *e;
+        r->tex_uint = strtoull(v, &e, 16);
+        if (*e == '/') r->tex_sint = strtoull(e + 1, NULL, 16);
+    }
     return r->vs && r->fs;
 }
 
@@ -589,6 +596,22 @@ static const char shipped_list[] =
 
 const char *shader_prep_shipped_list(void) { return shipped_list; }
 
+char *shader_prep_list_read(void) {
+    const char *path = getenv("LARECOMP_SHADER_LIST");
+    if (!path) return strdup(shipped_list);
+    char *list = NULL;
+    FILE *f = fopen(path, "rb");
+    if (f) {
+        fseek(f, 0, SEEK_END);
+        long n = ftell(f);
+        fseek(f, 0, SEEK_SET);
+        list = calloc(1, (size_t)(n > 0 ? n : 0) + 1);
+        if (n > 0 && fread(list, 1, (size_t)n, f) != (size_t)n) list[0] = 0;
+        fclose(f);
+    }
+    return list;
+}
+
 // The game files' shaders as one id (order-independent): another game version has another
 static uint64_t idx_game_id(void) {
     uint64_t g = idx_n;
@@ -614,18 +637,7 @@ bool shader_prep_run(const char *romfs, void (*progress)(int done, int total), c
 
 static bool prep_run_locked(const char *romfs, void (*progress)(int done, int total), const volatile int *cancel) {
     double t0 = ms_now();
-    char *list = NULL;
-    if (getenv("LARECOMP_SHADER_LIST")) {
-        FILE *f = fopen(getenv("LARECOMP_SHADER_LIST"), "rb");
-        if (f) {
-            fseek(f, 0, SEEK_END);
-            long n = ftell(f);
-            fseek(f, 0, SEEK_SET);
-            list = calloc(1, (size_t)(n > 0 ? n : 0) + 1);
-            if (n > 0 && fread(list, 1, (size_t)n, f) != (size_t)n) list[0] = 0;
-            fclose(f);
-        }
-    } else list = strdup(shipped_list);
+    char *list = shader_prep_list_read();
     uint64_t seen_game;
     char *seen = shader_seen_read(&seen_game);  // (the player's own list: after the shipped one, or alone)
     bool all = getenv("LARECOMP_SHADER_PREBUILD") && atoi(getenv("LARECOMP_SHADER_PREBUILD"));
@@ -737,11 +749,13 @@ static bool prep_run_locked(const char *romfs, void (*progress)(int done, int to
         }
         LOG("[shader] every program of the game files: %d, %d of them also with an integer last target; %d compute\n", ngen, nint, ncs);
     }
-    // done - pending moves both ways a little (builds finish on other threads): the count shown only goes up, and
-    // never past the total
+    // Records built: those handed over and those the backend added (a plain record's integer variants: known once it
+    // is translated, so the total grows as the run goes), less those not built yet. That moves both ways a little
+    // (builds finish on other threads): the count shown only goes up, and never past the total
     int total = nwork, shown = 0;
-#define PREP_REPORT(d) do { int d_ = (d); if (d_ > total) d_ = total; if (d_ > shown) shown = d_; \
-                            if (progress) progress(shown, total); } while (0)
+#define PREP_REPORT(d) do { total = nwork + renderer_prepare_added(); int d_ = (d); if (d_ > total) d_ = total; \
+                            if (d_ > shown) shown = d_; if (progress) progress(shown, total); } while (0)
+#define PREP_BUILT() (done + renderer_prepare_added() - renderer_prepare_pending())
     PREP_REPORT(0);
     FILE **files = calloc((size_t)idx_nfiles + 1, sizeof *files);
     int done = 0, prepared = 0, failed = 0, prepared_seen = 0;
@@ -756,16 +770,17 @@ static bool prep_run_locked(const char *romfs, void (*progress)(int done, int to
         else failed++;
         free(dv);
         free(df);
-        if ((++done & 7) == 0) PREP_REPORT(done - renderer_prepare_pending());
+        if ((++done & 7) == 0) PREP_REPORT(PREP_BUILT());
     }
     while (!(cancel && *cancel) && renderer_prepare_pending()) {  // (the last builds)
-        PREP_REPORT(done - renderer_prepare_pending());
+        PREP_REPORT(PREP_BUILT());
         struct timespec ts = {0, 5000000};
         nanosleep(&ts, NULL);
     }
     if (!(cancel && *cancel)) renderer_prepare_end();
     PREP_REPORT(total);
 #undef PREP_REPORT
+#undef PREP_BUILT
     free(work);
     free(gen);
     free(cs_gen);
@@ -781,7 +796,7 @@ static bool prep_run_locked(const char *romfs, void (*progress)(int done, int to
 static void prep_step_progress(int done, int total) {
     static int last = -1;
     int permille = total ? (int)((int64_t)done * 1000 / total) : 0;
-    if (permille == last) return;
+    if (permille <= last) return;  // (only forward: the total can grow, prep_run_locked)
     last = permille;
     if (total) printf("phase shaders %.3f %d/%d\n", permille / 1000.0, done, total);
     else printf("phase shaders 0.000 (reading the game files)\n");  // (the index: minutes on a first run)

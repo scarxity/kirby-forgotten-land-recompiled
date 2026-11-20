@@ -3,6 +3,10 @@
 // in the release zip the runtime's own setup copies or hard-links it into the install folder.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod ini;
+mod saves;
+mod update;
+
 use serde::Serialize;
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
@@ -16,7 +20,6 @@ const PROGRAM_ID: u64 = 0x0100_4D30_0C5A_E000;
 /// The game's update (patch), which has the same title and a program id ending E800.
 const UPDATE_ID: u64 = 0x0100_4D30_0C5A_E800;
 const MODULES: [&str; 3] = ["main", "sdk", "subsdk0"];
-const SETTING_KEYS: [&str; 3] = ["fullscreen", "resolution", "volume"];
 /// The runtime (game/game.mk EXE_NAME): next to the launcher in the zip, in build/ beside a source checkout.
 const PACKAGED_EXE: &str = "ForgottenLandRecomp.exe";
 /// Packaged mode: the folder the player picked, remembered until Build reads it.
@@ -32,6 +35,8 @@ const MAX_WORK_PATH: usize = 200;
 const EARLY_EXIT: Duration = Duration::from_secs(15);
 /// What the shaders were last prepared for (shader_stamp), in the work folder
 const SHADER_STAMP: &str = "shaders-prepared.txt";
+/// The launcher in the release zip (tools/dist.mk), what an update starts again.
+const LAUNCHER_EXE: &str = "ForgottenLandLauncher.exe";
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -120,7 +125,7 @@ fn parse_setup_line(line: &str) -> Option<SetupLine> {
 fn setup_failure(reason: &str) -> String {
     match reason {
         "not_found" => "No game files were found in that folder. It needs your extracted exefs (it holds main and main.npdm) and romfs (it holds the folders msg and gfx), in it or in folders inside it.",
-        "package" => "Those are packed game files (.xci, .nsp). Extract them first (exefs and romfs).",
+        "package" => "Those are packed game files (.xci, .nsp). Extract them first with an emulator set up with your own keys. In Ryujinx: right-click the game, Extract Data, Extract ExeFS, and pick an empty folder; then Extract Data, Extract RomFS, into the same folder. If the game's update is installed there, choose No Update first (right-click the game, Manage Title Updates). Then pick that folder here.",
         "version" => "Those are not the files of Kirby and the Forgotten Land 1.0.0. They are from another game, or from a version of Kirby this release does not support. Extract version 1.0.0 of the base game.",
         "update" => "That is the game's update, not the base game. Extract the base game, version 1.0.0, without the update.",
         "copy" => "The game files could not be copied. Check the free disk space and try again.",
@@ -222,6 +227,9 @@ struct App {
     pick_error: Mutex<String>,
     /// The runtime's verdict, with the times of the files it was made from.
     code: Mutex<Option<([Option<SystemTime>; 5], Code)>>,
+    updater: update::Updater,
+    /// RecompLauncher installed this copy and updates it itself: this launcher neither checks nor installs updates.
+    managed: bool,
 }
 
 #[derive(Serialize)]
@@ -240,11 +248,19 @@ struct Status {
     detail: Option<String>,
     error: String,
     settings: Vec<(String, String)>,
+    /// launcher-prefs.json
+    prefs: serde_json::Map<String, serde_json::Value>,
     mods: Vec<ModEntry>,
     crash: Option<Crash>,
     packaged: bool,
     /// Play prepares the shaders first (shader_stamp)
     shaders_ready: bool,
+    update: update::Update,
+    /// RecompLauncher updates this copy (see App::managed)
+    managed: bool,
+    version: &'static str,
+    auto_update: bool,
+    stable_only: bool,
 }
 
 fn find_repo(exe_dir: &Path) -> Option<PathBuf> {
@@ -379,6 +395,11 @@ fn keep_crash_log(work: &Path) -> String {
 }
 
 impl App {
+    /// The release folder, and not a copy RecompLauncher manages: the only place this launcher updates itself.
+    fn updates_here(&self) -> bool {
+        matches!(self.mode, Mode::Packaged) && !self.managed
+    }
+
     // true while the game runs; when it has just ended, records a crash for the status
     fn poll_game(&self) -> bool {
         let mut g = self.game.lock().unwrap();
@@ -419,6 +440,24 @@ impl App {
     }
     fn ini(&self) -> PathBuf {
         self.work.join("larecomp.ini")
+    }
+    // The game writes the whole file when it closes, so a change made meanwhile would be lost or would undo the game's own.
+    fn write_settings(&self, entries: &[(String, String)]) -> Result<(), String> {
+        if self.poll_game() {
+            return Err("Settings cannot be changed while the game is running.".into());
+        }
+        fs::create_dir_all(&self.work).map_err(|e| e.to_string())?;
+        ini::write(&self.ini(), entries)
+    }
+    fn back_up_saves(&self) -> Result<String, String> {
+        if self.poll_game() {
+            return Err("Close the game first, so a save is not copied while it is being written.".into());
+        }
+        let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S").to_string();
+        saves::back_up(&self.work.join("save"), &self.work.join("save-backups"), &stamp).map(|d| d.to_string_lossy().into())
+    }
+    fn prefs_file(&self) -> PathBuf {
+        self.work.join("launcher-prefs.json")
     }
     fn mods_dir(&self) -> PathBuf {
         self.work.join("mods")
@@ -503,19 +542,6 @@ impl App {
         c.args(["extracted", "--build-romfs"]);
         hide_window(&mut c);
         c
-    }
-    fn settings(&self) -> Vec<(String, String)> {
-        let text = fs::read_to_string(self.ini()).unwrap_or_default();
-        SETTING_KEYS
-            .iter()
-            .map(|k| {
-                let v = text.lines().find_map(|l| {
-                    let (key, val) = l.split_once('=')?;
-                    (key.trim() == *k).then(|| val.trim().to_string())
-                });
-                (k.to_string(), v.unwrap_or_default())
-            })
-            .collect()
     }
 }
 
@@ -630,11 +656,17 @@ fn status(app: St) -> Status {
         progress,
         detail: job.detail.clone(),
         error: job.error.clone(),
-        settings: app.settings(),
+        settings: ini::read(&app.ini()),
+        prefs: ini::read_prefs(&app.prefs_file()),
         mods: read_mods(&app.mods_dir()),
         crash: app.crash.lock().unwrap().clone(),
         packaged: matches!(app.mode, Mode::Packaged),
         shaders_ready: app.shaders_ready(),
+        update: app.updater.state(),
+        managed: app.managed,
+        version: env!("CARGO_PKG_VERSION"),
+        auto_update: update::pref(&app.work, update::AUTO_KEY, false),
+        stable_only: update::pref(&app.work, update::STABLE_KEY, true),
     }
 }
 
@@ -730,6 +762,9 @@ fn wait_step(app: &App) -> Result<(), String> {
 
 #[tauri::command]
 fn start_setup(app: St, code_only: Option<bool>) -> Result<(), String> {
+    if app.updater.working() {
+        return Err(UPDATING.into());
+    }
     // only the game code, from the game files set up already: no folder to pick, none needed
     let code_only = app.code_only(code_only.unwrap_or(false));
     let game = if code_only { None } else { Some(app.game_source().ok_or("Select your game folder first.")?) };
@@ -815,6 +850,9 @@ fn cancel(app: &App) {
 
 #[tauri::command]
 fn play(app: St) -> Result<(), String> {
+    if app.updater.working() {
+        return Err(UPDATING.into());
+    }
     let mut game = app.game.lock().unwrap();
     if game.as_mut().is_some_and(|(c, _)| matches!(c.try_wait(), Ok(None))) {
         return Ok(());
@@ -827,6 +865,23 @@ fn play(app: St) -> Result<(), String> {
         return start_game(&app, &mut game);
     }
     drop(game);
+    shaders_then(app, true)
+}
+
+/// Home's "Set up" when the shaders need preparing again (after an update, a driver or a mod change): only that step,
+/// then Play shows.
+#[tauri::command]
+fn prepare_shaders(app: St) -> Result<(), String> {
+    if app.updater.working() {
+        return Err(UPDATING.into());
+    }
+    if !app.built() {
+        return Err("The game code was not built by this version of the program. Open Set up and build it again.".into());
+    }
+    shaders_then(app, false)
+}
+
+fn shaders_then(app: St, play: bool) -> Result<(), String> {
     {
         let mut job = app.job.lock().unwrap();
         if !matches!(job.phase, Phase::Idle | Phase::Failed) {
@@ -839,7 +894,7 @@ fn play(app: St) -> Result<(), String> {
         let result = fs::File::create(app.work.join("setup.log"))
             .map_err(|e| e.to_string())
             .and_then(|mut log| run_shaders(&app, &mut log))
-            .and_then(|()| start_game(&app, &mut app.game.lock().unwrap()));
+            .and_then(|()| if play { start_game(&app, &mut app.game.lock().unwrap()) } else { Ok(()) });
         let mut job = app.job.lock().unwrap();
         match result {
             Ok(()) => job.phase = Phase::Idle,
@@ -906,15 +961,19 @@ fn run_shaders(app: &App, log: &mut fs::File) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn set_setting(app: St, key: String, value: String) -> Result<(), String> {
-    if !SETTING_KEYS.contains(&key.as_str()) || value.contains(['\n', '\r']) {
-        return Err("Unknown setting.".into());
-    }
-    let text = fs::read_to_string(app.ini()).unwrap_or_default();
-    let mut lines: Vec<String> = text.lines().filter(|l| l.split_once('=').map(|(k, _)| k.trim()) != Some(key.as_str())).map(String::from).collect();
-    lines.push(format!("{key} = {value}"));
-    fs::create_dir_all(&app.work).map_err(|e| e.to_string())?;
-    fs::write(app.ini(), lines.join("\n") + "\n").map_err(|e| e.to_string())
+fn set_settings(app: St, entries: Vec<(String, String)>) -> Result<(), String> {
+    app.write_settings(&entries)
+}
+
+#[tauri::command]
+fn set_prefs(app: St, values: serde_json::Map<String, serde_json::Value>) -> Result<(), String> {
+    ini::write_prefs(&app.prefs_file(), values)
+}
+
+// (async: it copies files)
+#[tauri::command(async)]
+fn backup_saves(app: St) -> Result<String, String> {
+    app.back_up_saves()
 }
 
 #[derive(Debug, PartialEq, Serialize)]
@@ -989,6 +1048,77 @@ fn move_mod(app: St, name: String, up: bool) -> Result<(), String> {
     })
 }
 
+const UPDATING: &str = "An update is being installed. The launcher restarts when it is done.";
+
+/// Why an update must wait, if it must: it replaces the runtime and the tools a running game or build uses.
+fn update_blocked(app: &App) -> Option<String> {
+    if app.poll_game() {
+        return Some("Close the game before updating.".into());
+    }
+    let busy = !matches!(app.job.lock().unwrap().phase, Phase::Idle | Phase::Failed);
+    busy.then(|| "Wait for the build or the shader preparation to finish before updating.".into())
+}
+
+/// Downloads and installs the update that was found, then starts the new launcher in place of this one.
+fn begin_update(app: &Arc<App>, handle: &tauri::AppHandle) -> Result<(), String> {
+    if !app.updates_here() {
+        return Err("Updates are for the release folder, and not for a copy RecompLauncher manages.".into());
+    }
+    if let Some(why) = update_blocked(app) {
+        return Err(why);
+    }
+    let update::Update::Available(release) = app.updater.state() else { return Err("There is no update to install.".into()) };
+    let (app, handle) = (Arc::clone(app), handle.clone());
+    std::thread::spawn(move || match update::apply(&app.updater, &app.work, &release) {
+        Ok(()) => match Command::new(app.work.join(LAUNCHER_EXE)).current_dir(&app.work).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn() {
+            Ok(_) => handle.exit(0),
+            Err(e) => update::fail(&app.updater, format!("The update is installed, but the launcher could not start again ({e}). Start it from this folder.")),
+        },
+        Err(_) => {} // apply() put the reason in the state
+    });
+    Ok(())
+}
+
+#[tauri::command]
+fn start_update(app: St, handle: tauri::AppHandle) -> Result<(), String> {
+    begin_update(&app, &handle)
+}
+
+#[tauri::command]
+fn cancel_update(app: St) {
+    app.updater.cancel();
+}
+
+#[tauri::command(async)]
+fn check_update(app: St) {
+    if app.updates_here() {
+        update::check(&app.updater, &app.work, true);
+    }
+}
+
+#[tauri::command]
+fn set_pref(app: St, key: String, on: bool) -> Result<(), String> {
+    if ![update::AUTO_KEY, update::STABLE_KEY].contains(&key.as_str()) {
+        return Err("Unknown preference.".into());
+    }
+    update::set_pref(&app.work, &key, on)?;
+    if key == update::STABLE_KEY && app.updates_here() {
+        // the channel changed: what is offered changes with it
+        let app = Arc::clone(&app);
+        std::thread::spawn(move || update::check(&app.updater, &app.work, true));
+    }
+    Ok(())
+}
+
+/// Every start: delete what the last update left, look for a newer version, and install it when the player asked for that.
+fn update_on_start(app: Arc<App>, handle: tauri::AppHandle) {
+    update::cleanup(&app.work);
+    update::check(&app.updater, &app.work, false);
+    if update::pref(&app.work, update::AUTO_KEY, false) && matches!(app.updater.state(), update::Update::Available(_)) {
+        let _ = begin_update(&app, &handle);
+    }
+}
+
 #[tauri::command]
 fn dismiss_crash(app: St) {
     *app.crash.lock().unwrap() = None;
@@ -1002,6 +1132,7 @@ fn open_path(app: St, which: String) -> Result<(), String> {
             fs::create_dir_all(app.mods_dir()).map_err(|e| e.to_string())?;
             app.mods_dir()
         }
+        "saves" => app.work.join("save"),
         "setup_log" => app.work.join("setup.log"),
         "game_log" => app.work.join("game.log"),
         // the file name is the one the backend recorded, never a path from the page
@@ -1017,6 +1148,18 @@ fn open_path(app: St, which: String) -> Result<(), String> {
     Command::new("explorer").arg(p).spawn().map(|_| ()).map_err(|e| e.to_string())
 }
 
+/// The new-issue form of this project (.github/ISSUE_TEMPLATE): it asks for the version, the GPU and the log files.
+fn new_issue_url() -> String {
+    format!("https://github.com/{}/issues/new?template=bug-or-performance.yml", update::REPO)
+}
+
+/// About's "Report a problem": the folder that holds game.log (and cache\shader_seen.txt) to attach, and the form.
+#[tauri::command]
+fn report_problem(app: St) -> Result<(), String> {
+    Command::new("explorer").arg(&app.work).spawn().map_err(|e| e.to_string())?;
+    Command::new("explorer").arg(new_issue_url()).spawn().map(|_| ()).map_err(|e| e.to_string())
+}
+
 fn main() {
     let exe_dir = std::env::current_exe().ok().and_then(|e| e.parent().map(Path::to_path_buf)).unwrap_or_default();
     let mode = Mode::detect(&exe_dir);
@@ -1025,6 +1168,7 @@ fn main() {
         Mode::Packaged => exe_dir,
     };
     let work = fs::canonicalize(&work).map(|p| PathBuf::from(p.to_string_lossy().trim_start_matches(r"\\?\"))).unwrap_or(work);
+    let managed = matches!(mode, Mode::Packaged) && update::managed(&work);
     let app = Arc::new(App {
         work_problem: work_problem(&mode, &work),
         work,
@@ -1034,11 +1178,21 @@ fn main() {
         crash: Mutex::new(None),
         pick_error: Mutex::new(String::new()),
         code: Mutex::new(None),
+        updater: update::Updater::default(),
+        managed,
     });
+    let on_start = Arc::clone(&app);
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(app)
-        .invoke_handler(tauri::generate_handler![status, set_game_dir, start_setup, cancel_setup, play, set_setting, set_mod, move_mod, open_path, dismiss_crash])
+        .setup(move |t| {
+            if on_start.updates_here() {
+                let handle = t.handle().clone();
+                std::thread::spawn(move || update_on_start(on_start, handle));
+            }
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![status, set_game_dir, start_setup, cancel_setup, play, prepare_shaders, set_settings, set_prefs, backup_saves, set_mod, move_mod, open_path, report_problem, dismiss_crash, start_update, cancel_update, check_update, set_pref])
         .run(tauri::generate_context!())
         .expect("launcher failed to start");
 }
@@ -1061,7 +1215,19 @@ mod tests {
             crash: Mutex::new(None),
             pick_error: Mutex::new(String::new()),
             code: Mutex::new(None),
+            updater: update::Updater::default(),
+            managed: false,
         }
+    }
+
+    #[test]
+    fn only_an_unmanaged_release_folder_updates_itself() {
+        let mut a = app(r"E:\a\repo", r"E:\a\work");
+        assert!(!a.updates_here(), "a source checkout is not updated");
+        a.mode = Mode::Packaged;
+        assert!(a.updates_here());
+        a.managed = true;
+        assert!(!a.updates_here(), "RecompLauncher updates its own installs");
     }
 
     #[test]
@@ -1205,6 +1371,14 @@ mod tests {
     }
 
     #[test]
+    fn the_report_button_opens_this_projects_issue_form() {
+        let url = new_issue_url();
+        assert_eq!(url, "https://github.com/scarxity/kirby-forgotten-land-recompiled/issues/new?template=bug-or-performance.yml");
+        let form = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.github/ISSUE_TEMPLATE/bug-or-performance.yml");
+        assert!(form.is_file(), "the form the button names is missing: {}", form.display());
+    }
+
+    #[test]
     fn a_missing_vulkan_driver_says_what_to_do() {
         let log = format!("{START}FATAL: SDL_CreateWindow: Installed Vulkan doesn't implement the VK_KHR_surface extension\nhost backtrace:\n");
         let Outcome::Crashed(reason) = classify(3, &log) else { panic!("a crash") };
@@ -1261,6 +1435,31 @@ mod tests {
         let crash = app.crash.lock().unwrap().clone().expect("a card for a game that closed at once");
         assert!(crash.reason.contains("closed 0 seconds after it started (exit code 1)"), "{}", crash.reason);
         assert!(root.join(&crash.log).is_file());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn settings_and_saves_are_left_alone_while_the_game_runs() {
+        let root = scratch("running");
+        fs::create_dir_all(root.join("save")).unwrap();
+        fs::write(root.join("save").join("a.bin"), b"a").unwrap();
+        fs::write(root.join("larecomp.ini"), "volume = 1.00
+").unwrap();
+        let mut app = app("", root.to_str().unwrap());
+        app.work = root.clone();
+        *app.game.lock().unwrap() = Some((sleeper().spawn().unwrap(), Instant::now()));
+        assert!(app.write_settings(&[("volume".into(), "0.10".into())]).is_err());
+        assert_eq!(fs::read_to_string(root.join("larecomp.ini")).unwrap(), "volume = 1.00
+");
+        assert!(app.back_up_saves().is_err());
+        assert!(!root.join("save-backups").exists());
+        let (mut child, _) = app.game.lock().unwrap().take().unwrap();
+        child.kill().unwrap();
+        child.wait().unwrap();
+        app.write_settings(&[("volume".into(), "0.10".into())]).unwrap();
+        assert_eq!(fs::read_to_string(root.join("larecomp.ini")).unwrap(), "volume = 0.10
+");
+        assert!(app.back_up_saves().is_ok());
         fs::remove_dir_all(&root).unwrap();
     }
 
@@ -1473,5 +1672,23 @@ mod tests {
         edit_mods(&dir, "-x", |m, i| m[i].on = true).unwrap();
         assert_eq!(fs::read_to_string(dir.join("mods.txt")).unwrap(), "a\nb\nc\n");
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn an_update_waits_for_the_game_and_for_a_build() {
+        let app = app("", "");
+        assert_eq!(update_blocked(&app), None);
+        app.job.lock().unwrap().phase = Phase::Shaders;
+        assert!(update_blocked(&app).unwrap().contains("shader"));
+        app.job.lock().unwrap().phase = Phase::Failed;
+        assert_eq!(update_blocked(&app), None, "a failed build does not hold an update back");
+        let mut c = Command::new("cmd");
+        c.args(["/C", "ping -n 30 127.0.0.1 >nul"]);
+        let child = c.spawn().unwrap();
+        *app.game.lock().unwrap() = Some((child, Instant::now()));
+        assert!(update_blocked(&app).unwrap().contains("game"));
+        let (mut child, _) = app.game.lock().unwrap().take().unwrap();
+        let _ = child.kill();
+        let _ = child.wait();
     }
 }

@@ -7,10 +7,17 @@ Project page and source code: https://github.com/scarxity/kirby-forgotten-land-r
 
 This is a work in progress. docs/STATUS.md in the repository says what has been checked and the known problems.
 
-NO GAME FILES ARE INCLUDED, and no game code: this zip holds only tools. You need your own copy of the game, version
+NO GAME FILES ARE INCLUDED, and no game code or assets: this zip holds only tools, and a list of shader
+variant records (one-way hashes and draw settings, never shader code) that the shader step uses to find and build the
+shaders in your own game files. You need your own copy of the game, version
 1.0.0, extracted to a folder that holds two folders, exefs and romfs (program id 01004D300C5AE000). Packed files
 (.xci, .nsp, .nsz, .nca) must be extracted first. The game's update is not used. The game code is built on your PC
 from those files, and stays there.
+
+To extract a .nsp or .xci, use an emulator you have set up with your own keys. In Ryujinx: right-click the game,
+Extract Data, Extract ExeFS, and pick an empty folder; then Extract Data, Extract RomFS, into the same folder. If the
+game's update is installed there, choose No Update first (right-click the game, Manage Title Updates). Then pick that
+folder in the launcher.
 
 What you need
 -------------
@@ -34,9 +41,10 @@ How to start
    cores take longer. A file that takes over a minute is named under the progress bar. You can Cancel and build again
    later: the pieces already compiled are kept, so it carries on from there.
    Then it prepares the shaders: every shader of your game files is built once for your graphics card ("Preparing
-   shaders", about 7 minutes on an 8-core laptop), so the game builds almost none while you play.
-5. Click "Play". Next time the launcher shows Play straight away. After a graphics driver update, or when you switch a
-   mod on or off, Play prepares the shaders again first.
+   shaders", about 15 minutes on an 8-core laptop), so the game builds almost none while you play.
+5. Click "Play". Next time the launcher shows Play straight away. After an update of this program, a graphics driver
+   update, or when you switch a mod on or off, the launcher shows "Set up" instead: it prepares the shaders again,
+   then Play.
 
 The first frame of an area you enter for the first time can still take a moment (a tenth of a second on the test
 laptop), and so can a few shaders the preparation can't foresee. These are kept in the cache folder, so it happens once.
@@ -122,6 +130,8 @@ If something goes wrong
 - A message about Vulkan or the graphics driver: update your graphics driver. The game needs Vulkan 1.3.
 - A message about AVX2: this CPU is too old for the game code.
 - The game closes within seconds: the launcher says so. Read game.log for the reason.
+- To report a problem, use "Report a problem" on the launcher's About page and attach game.log (and cache\shader_seen.txt
+  for stutter): the shaders other players meet are added to the next release, so it helps remove stutter for everyone.
 
 Legal and licences
 ------------------

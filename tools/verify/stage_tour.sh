@@ -51,7 +51,7 @@ run_step() {  # run_step <step>: one run, its record appended to tour.jsonl
         export PATH="/c/msys64/ucrt64/bin:$PATH"
         export LARECOMP_NO_LAUNCHER=1 LARECOMP_GAME_LIB=build/lasgame.dll LARECOMP_SAVE_DIR="$(win "$OUT/save")" LARECOMP_HIDDEN=1
         export LARECOMP_NO_USER_INPUT=1 LARECOMP_INPUT="$BOOT,$PLAY" LARECOMP_STAGE="$step" LARECOMP_LOG_FILES=1 LARECOMP_LOG_SKIPS=1
-        export LARECOMP_AUDIO_GAIN=0 LARECOMP_AUDIO_WAV="$(win "$wav")"  # (the game's sound to a file, none to the speakers)
+        export LARECOMP_NO_AUDIO=1 LARECOMP_AUDIO_WAV="$(win "$wav")"  # (the game's sound to a file, no audio device opened)
         export LARECOMP_WINDOW_SHOT=$END LARECOMP_SHOT_PATH="$(win "$shot")" LARECOMP_EXIT_AFTER_SHOT=1
         ${TOUR_WRAP:-} bash "$ROOT/tools/verify/stage_run.sh" "$SECS" "$log" "$GAME"
     )
