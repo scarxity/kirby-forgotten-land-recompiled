@@ -1731,7 +1731,7 @@ dependencies = [
 
 [[package]]
 name = "kfl-recomp-launcher"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "chrono",
  "junction",
