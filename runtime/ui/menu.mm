@@ -664,7 +664,7 @@ static void tab_display(void) {
     opt_section("Display");
     const char *aspects[] = {LN("Unlocked"), LN("Original 16:9")};
     preview_text(LN("Configure the shape of the picture. Unlocked fills the window, Original keeps 16:9."), NULL);
-    opt_preview("Aspect ratio", &g_settings.aspect, aspects, 2, ASPECT_UNLOCKED,
+    opt_preview("Aspect ratio", &g_settings.aspect, aspects, 2, ASPECT_ORIGINAL,
                "Unlocked fills the window and shows more of the island on wide screens, up to ultrawide. Original keeps "
                "the game's 16:9 view with bars.");
     bool fs = g_settings.fullscreen;

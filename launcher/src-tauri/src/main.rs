@@ -3,6 +3,9 @@
 // in the release zip the runtime's own setup copies or hard-links it into the install folder.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod ini;
+mod saves;
+
 use serde::Serialize;
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
@@ -16,7 +19,6 @@ const PROGRAM_ID: u64 = 0x0100_4D30_0C5A_E000;
 /// The game's update (patch), which has the same title and a program id ending E800.
 const UPDATE_ID: u64 = 0x0100_4D30_0C5A_E800;
 const MODULES: [&str; 3] = ["main", "sdk", "subsdk0"];
-const SETTING_KEYS: [&str; 3] = ["fullscreen", "resolution", "volume"];
 /// The runtime (game/game.mk EXE_NAME): next to the launcher in the zip, in build/ beside a source checkout.
 const PACKAGED_EXE: &str = "ForgottenLandRecomp.exe";
 /// Packaged mode: the folder the player picked, remembered until Build reads it.
@@ -240,6 +242,8 @@ struct Status {
     detail: Option<String>,
     error: String,
     settings: Vec<(String, String)>,
+    /// launcher-prefs.json
+    prefs: serde_json::Map<String, serde_json::Value>,
     mods: Vec<ModEntry>,
     crash: Option<Crash>,
     packaged: bool,
@@ -420,6 +424,24 @@ impl App {
     fn ini(&self) -> PathBuf {
         self.work.join("larecomp.ini")
     }
+    // The game writes the whole file when it closes, so a change made meanwhile would be lost or would undo the game's own.
+    fn write_settings(&self, entries: &[(String, String)]) -> Result<(), String> {
+        if self.poll_game() {
+            return Err("Settings cannot be changed while the game is running.".into());
+        }
+        fs::create_dir_all(&self.work).map_err(|e| e.to_string())?;
+        ini::write(&self.ini(), entries)
+    }
+    fn back_up_saves(&self) -> Result<String, String> {
+        if self.poll_game() {
+            return Err("Close the game first, so a save is not copied while it is being written.".into());
+        }
+        let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S").to_string();
+        saves::back_up(&self.work.join("save"), &self.work.join("save-backups"), &stamp).map(|d| d.to_string_lossy().into())
+    }
+    fn prefs_file(&self) -> PathBuf {
+        self.work.join("launcher-prefs.json")
+    }
     fn mods_dir(&self) -> PathBuf {
         self.work.join("mods")
     }
@@ -503,19 +525,6 @@ impl App {
         c.args(["extracted", "--build-romfs"]);
         hide_window(&mut c);
         c
-    }
-    fn settings(&self) -> Vec<(String, String)> {
-        let text = fs::read_to_string(self.ini()).unwrap_or_default();
-        SETTING_KEYS
-            .iter()
-            .map(|k| {
-                let v = text.lines().find_map(|l| {
-                    let (key, val) = l.split_once('=')?;
-                    (key.trim() == *k).then(|| val.trim().to_string())
-                });
-                (k.to_string(), v.unwrap_or_default())
-            })
-            .collect()
     }
 }
 
@@ -630,7 +639,8 @@ fn status(app: St) -> Status {
         progress,
         detail: job.detail.clone(),
         error: job.error.clone(),
-        settings: app.settings(),
+        settings: ini::read(&app.ini()),
+        prefs: ini::read_prefs(&app.prefs_file()),
         mods: read_mods(&app.mods_dir()),
         crash: app.crash.lock().unwrap().clone(),
         packaged: matches!(app.mode, Mode::Packaged),
@@ -906,15 +916,19 @@ fn run_shaders(app: &App, log: &mut fs::File) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn set_setting(app: St, key: String, value: String) -> Result<(), String> {
-    if !SETTING_KEYS.contains(&key.as_str()) || value.contains(['\n', '\r']) {
-        return Err("Unknown setting.".into());
-    }
-    let text = fs::read_to_string(app.ini()).unwrap_or_default();
-    let mut lines: Vec<String> = text.lines().filter(|l| l.split_once('=').map(|(k, _)| k.trim()) != Some(key.as_str())).map(String::from).collect();
-    lines.push(format!("{key} = {value}"));
-    fs::create_dir_all(&app.work).map_err(|e| e.to_string())?;
-    fs::write(app.ini(), lines.join("\n") + "\n").map_err(|e| e.to_string())
+fn set_settings(app: St, entries: Vec<(String, String)>) -> Result<(), String> {
+    app.write_settings(&entries)
+}
+
+#[tauri::command]
+fn set_prefs(app: St, values: serde_json::Map<String, serde_json::Value>) -> Result<(), String> {
+    ini::write_prefs(&app.prefs_file(), values)
+}
+
+// (async: it copies files)
+#[tauri::command(async)]
+fn backup_saves(app: St) -> Result<String, String> {
+    app.back_up_saves()
 }
 
 #[derive(Debug, PartialEq, Serialize)]
@@ -1002,6 +1016,7 @@ fn open_path(app: St, which: String) -> Result<(), String> {
             fs::create_dir_all(app.mods_dir()).map_err(|e| e.to_string())?;
             app.mods_dir()
         }
+        "saves" => app.work.join("save"),
         "setup_log" => app.work.join("setup.log"),
         "game_log" => app.work.join("game.log"),
         // the file name is the one the backend recorded, never a path from the page
@@ -1038,7 +1053,7 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(app)
-        .invoke_handler(tauri::generate_handler![status, set_game_dir, start_setup, cancel_setup, play, set_setting, set_mod, move_mod, open_path, dismiss_crash])
+        .invoke_handler(tauri::generate_handler![status, set_game_dir, start_setup, cancel_setup, play, set_settings, set_prefs, backup_saves, set_mod, move_mod, open_path, dismiss_crash])
         .run(tauri::generate_context!())
         .expect("launcher failed to start");
 }
@@ -1261,6 +1276,31 @@ mod tests {
         let crash = app.crash.lock().unwrap().clone().expect("a card for a game that closed at once");
         assert!(crash.reason.contains("closed 0 seconds after it started (exit code 1)"), "{}", crash.reason);
         assert!(root.join(&crash.log).is_file());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn settings_and_saves_are_left_alone_while_the_game_runs() {
+        let root = scratch("running");
+        fs::create_dir_all(root.join("save")).unwrap();
+        fs::write(root.join("save").join("a.bin"), b"a").unwrap();
+        fs::write(root.join("larecomp.ini"), "volume = 1.00
+").unwrap();
+        let mut app = app("", root.to_str().unwrap());
+        app.work = root.clone();
+        *app.game.lock().unwrap() = Some((sleeper().spawn().unwrap(), Instant::now()));
+        assert!(app.write_settings(&[("volume".into(), "0.10".into())]).is_err());
+        assert_eq!(fs::read_to_string(root.join("larecomp.ini")).unwrap(), "volume = 1.00
+");
+        assert!(app.back_up_saves().is_err());
+        assert!(!root.join("save-backups").exists());
+        let (mut child, _) = app.game.lock().unwrap().take().unwrap();
+        child.kill().unwrap();
+        child.wait().unwrap();
+        app.write_settings(&[("volume".into(), "0.10".into())]).unwrap();
+        assert_eq!(fs::read_to_string(root.join("larecomp.ini")).unwrap(), "volume = 0.10
+");
+        assert!(app.back_up_saves().is_ok());
         fs::remove_dir_all(&root).unwrap();
     }
 
