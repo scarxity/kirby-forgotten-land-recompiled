@@ -5,6 +5,7 @@
 
 mod ini;
 mod saves;
+mod update;
 
 use serde::Serialize;
 use std::fs;
@@ -34,6 +35,8 @@ const MAX_WORK_PATH: usize = 200;
 const EARLY_EXIT: Duration = Duration::from_secs(15);
 /// What the shaders were last prepared for (shader_stamp), in the work folder
 const SHADER_STAMP: &str = "shaders-prepared.txt";
+/// The launcher in the release zip (tools/dist.mk), what an update starts again.
+const LAUNCHER_EXE: &str = "ForgottenLandLauncher.exe";
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -224,6 +227,9 @@ struct App {
     pick_error: Mutex<String>,
     /// The runtime's verdict, with the times of the files it was made from.
     code: Mutex<Option<([Option<SystemTime>; 5], Code)>>,
+    updater: update::Updater,
+    /// RecompLauncher installed this copy and updates it itself: this launcher neither checks nor installs updates.
+    managed: bool,
 }
 
 #[derive(Serialize)]
@@ -249,6 +255,12 @@ struct Status {
     packaged: bool,
     /// Play prepares the shaders first (shader_stamp)
     shaders_ready: bool,
+    update: update::Update,
+    /// RecompLauncher updates this copy (see App::managed)
+    managed: bool,
+    version: &'static str,
+    auto_update: bool,
+    stable_only: bool,
 }
 
 fn find_repo(exe_dir: &Path) -> Option<PathBuf> {
@@ -383,6 +395,11 @@ fn keep_crash_log(work: &Path) -> String {
 }
 
 impl App {
+    /// The release folder, and not a copy RecompLauncher manages: the only place this launcher updates itself.
+    fn updates_here(&self) -> bool {
+        matches!(self.mode, Mode::Packaged) && !self.managed
+    }
+
     // true while the game runs; when it has just ended, records a crash for the status
     fn poll_game(&self) -> bool {
         let mut g = self.game.lock().unwrap();
@@ -645,6 +662,11 @@ fn status(app: St) -> Status {
         crash: app.crash.lock().unwrap().clone(),
         packaged: matches!(app.mode, Mode::Packaged),
         shaders_ready: app.shaders_ready(),
+        update: app.updater.state(),
+        managed: app.managed,
+        version: env!("CARGO_PKG_VERSION"),
+        auto_update: update::pref(&app.work, update::AUTO_KEY, false),
+        stable_only: update::pref(&app.work, update::STABLE_KEY, true),
     }
 }
 
@@ -740,6 +762,9 @@ fn wait_step(app: &App) -> Result<(), String> {
 
 #[tauri::command]
 fn start_setup(app: St, code_only: Option<bool>) -> Result<(), String> {
+    if app.updater.working() {
+        return Err(UPDATING.into());
+    }
     // only the game code, from the game files set up already: no folder to pick, none needed
     let code_only = app.code_only(code_only.unwrap_or(false));
     let game = if code_only { None } else { Some(app.game_source().ok_or("Select your game folder first.")?) };
@@ -825,6 +850,9 @@ fn cancel(app: &App) {
 
 #[tauri::command]
 fn play(app: St) -> Result<(), String> {
+    if app.updater.working() {
+        return Err(UPDATING.into());
+    }
     let mut game = app.game.lock().unwrap();
     if game.as_mut().is_some_and(|(c, _)| matches!(c.try_wait(), Ok(None))) {
         return Ok(());
@@ -1003,6 +1031,77 @@ fn move_mod(app: St, name: String, up: bool) -> Result<(), String> {
     })
 }
 
+const UPDATING: &str = "An update is being installed. The launcher restarts when it is done.";
+
+/// Why an update must wait, if it must: it replaces the runtime and the tools a running game or build uses.
+fn update_blocked(app: &App) -> Option<String> {
+    if app.poll_game() {
+        return Some("Close the game before updating.".into());
+    }
+    let busy = !matches!(app.job.lock().unwrap().phase, Phase::Idle | Phase::Failed);
+    busy.then(|| "Wait for the build or the shader preparation to finish before updating.".into())
+}
+
+/// Downloads and installs the update that was found, then starts the new launcher in place of this one.
+fn begin_update(app: &Arc<App>, handle: &tauri::AppHandle) -> Result<(), String> {
+    if !app.updates_here() {
+        return Err("Updates are for the release folder, and not for a copy RecompLauncher manages.".into());
+    }
+    if let Some(why) = update_blocked(app) {
+        return Err(why);
+    }
+    let update::Update::Available(release) = app.updater.state() else { return Err("There is no update to install.".into()) };
+    let (app, handle) = (Arc::clone(app), handle.clone());
+    std::thread::spawn(move || match update::apply(&app.updater, &app.work, &release) {
+        Ok(()) => match Command::new(app.work.join(LAUNCHER_EXE)).current_dir(&app.work).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn() {
+            Ok(_) => handle.exit(0),
+            Err(e) => update::fail(&app.updater, format!("The update is installed, but the launcher could not start again ({e}). Start it from this folder.")),
+        },
+        Err(_) => {} // apply() put the reason in the state
+    });
+    Ok(())
+}
+
+#[tauri::command]
+fn start_update(app: St, handle: tauri::AppHandle) -> Result<(), String> {
+    begin_update(&app, &handle)
+}
+
+#[tauri::command]
+fn cancel_update(app: St) {
+    app.updater.cancel();
+}
+
+#[tauri::command(async)]
+fn check_update(app: St) {
+    if app.updates_here() {
+        update::check(&app.updater, &app.work, true);
+    }
+}
+
+#[tauri::command]
+fn set_pref(app: St, key: String, on: bool) -> Result<(), String> {
+    if ![update::AUTO_KEY, update::STABLE_KEY].contains(&key.as_str()) {
+        return Err("Unknown preference.".into());
+    }
+    update::set_pref(&app.work, &key, on)?;
+    if key == update::STABLE_KEY && app.updates_here() {
+        // the channel changed: what is offered changes with it
+        let app = Arc::clone(&app);
+        std::thread::spawn(move || update::check(&app.updater, &app.work, true));
+    }
+    Ok(())
+}
+
+/// Every start: delete what the last update left, look for a newer version, and install it when the player asked for that.
+fn update_on_start(app: Arc<App>, handle: tauri::AppHandle) {
+    update::cleanup(&app.work);
+    update::check(&app.updater, &app.work, false);
+    if update::pref(&app.work, update::AUTO_KEY, false) && matches!(app.updater.state(), update::Update::Available(_)) {
+        let _ = begin_update(&app, &handle);
+    }
+}
+
 #[tauri::command]
 fn dismiss_crash(app: St) {
     *app.crash.lock().unwrap() = None;
@@ -1040,6 +1139,7 @@ fn main() {
         Mode::Packaged => exe_dir,
     };
     let work = fs::canonicalize(&work).map(|p| PathBuf::from(p.to_string_lossy().trim_start_matches(r"\\?\"))).unwrap_or(work);
+    let managed = matches!(mode, Mode::Packaged) && update::managed(&work);
     let app = Arc::new(App {
         work_problem: work_problem(&mode, &work),
         work,
@@ -1049,11 +1149,21 @@ fn main() {
         crash: Mutex::new(None),
         pick_error: Mutex::new(String::new()),
         code: Mutex::new(None),
+        updater: update::Updater::default(),
+        managed,
     });
+    let on_start = Arc::clone(&app);
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(app)
-        .invoke_handler(tauri::generate_handler![status, set_game_dir, start_setup, cancel_setup, play, set_settings, set_prefs, backup_saves, set_mod, move_mod, open_path, dismiss_crash])
+        .setup(move |t| {
+            if on_start.updates_here() {
+                let handle = t.handle().clone();
+                std::thread::spawn(move || update_on_start(on_start, handle));
+            }
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![status, set_game_dir, start_setup, cancel_setup, play, set_settings, set_prefs, backup_saves, set_mod, move_mod, open_path, dismiss_crash, start_update, cancel_update, check_update, set_pref])
         .run(tauri::generate_context!())
         .expect("launcher failed to start");
 }
@@ -1076,7 +1186,19 @@ mod tests {
             crash: Mutex::new(None),
             pick_error: Mutex::new(String::new()),
             code: Mutex::new(None),
+            updater: update::Updater::default(),
+            managed: false,
         }
+    }
+
+    #[test]
+    fn only_an_unmanaged_release_folder_updates_itself() {
+        let mut a = app(r"E:\a\repo", r"E:\a\work");
+        assert!(!a.updates_here(), "a source checkout is not updated");
+        a.mode = Mode::Packaged;
+        assert!(a.updates_here());
+        a.managed = true;
+        assert!(!a.updates_here(), "RecompLauncher updates its own installs");
     }
 
     #[test]
@@ -1513,5 +1635,23 @@ mod tests {
         edit_mods(&dir, "-x", |m, i| m[i].on = true).unwrap();
         assert_eq!(fs::read_to_string(dir.join("mods.txt")).unwrap(), "a\nb\nc\n");
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn an_update_waits_for_the_game_and_for_a_build() {
+        let app = app("", "");
+        assert_eq!(update_blocked(&app), None);
+        app.job.lock().unwrap().phase = Phase::Shaders;
+        assert!(update_blocked(&app).unwrap().contains("shader"));
+        app.job.lock().unwrap().phase = Phase::Failed;
+        assert_eq!(update_blocked(&app), None, "a failed build does not hold an update back");
+        let mut c = Command::new("cmd");
+        c.args(["/C", "ping -n 30 127.0.0.1 >nul"]);
+        let child = c.spawn().unwrap();
+        *app.game.lock().unwrap() = Some((child, Instant::now()));
+        assert!(update_blocked(&app).unwrap().contains("game"));
+        let (mut child, _) = app.game.lock().unwrap().take().unwrap();
+        let _ = child.kill();
+        let _ = child.wait();
     }
 }
