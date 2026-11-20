@@ -76,6 +76,8 @@ typedef struct {
     ShaderTexture tex[64];
     uint32_t attr_mask;     // vertex: input attributes; fragment: input varyings
     uint32_t out_mask;      // vertex: output varyings; fragment: render targets written
+    uint64_t int_reads;     // (GLSL) vertex: input attributes, fragment: texture slots, whose bits the shader uses as
+                            // integers (an integer format or view there needs its own program: ShaderKey attr_kind, tex_uint)
     bool writes_depth, uses_discard, writes_point_size;
     bool uses_gmem;         // global memory access: bind the guest heap at GMEM_BUFFER_INDEX
     bool uses_gmem_map;     // (GLSL compute only) gmem loads look their address up in GMap (uniform, binding
