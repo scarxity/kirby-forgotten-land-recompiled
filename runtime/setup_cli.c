@@ -26,10 +26,10 @@
 enum { NOT_FOUND = 8, PACKAGE, VERSION, COPY, BUILD, TOOLS, BAD_IMAGE, UPDATE };
 static const char *const REASON[] = {"not_found", "package", "version", "copy", "build", "tools", "bad_image", "update"};
 
-enum { LOOKING, COPYING, READING, COMPILING, FINISHING };
-static const char *const PHASE[] = {"looking", "copying", "reading", "compiling", "finishing"};
+enum { LOOKING, COPYING, READING, COMPILING, FINISHING, SHADERS };
+static const char *const PHASE[] = {"looking", "copying", "reading", "compiling", "finishing", "shaders"};
 static const char *const PREPARE_TEXT[] = {"Looking for the game files", "Copying the game files", "Reading the game code",
-                                           "Compiling the game code", "Finishing"};
+                                           "Compiling the game code", "Finishing", "Preparing shaders"};
 
 static char g_cmd[16], g_folder[4096];
 
@@ -135,7 +135,34 @@ static void build_progress(double f, const char *step) {
     const char *slow = strchr(step, '(');  // (gamebuild.c adds the file the compiler has been on longest, once it is slow)
     int phase = !strncmp(step, "Finishing", 9) ? FINISHING
                 : !strncmp(step, "Recompiling", 11) || !strncmp(step, "Resuming", 8) ? COMPILING : READING;
-    emit(phase, 0.15 + 0.85 * f, slow ? slow : "");
+    // (--prepare goes on to the shaders: the game code is 15-70% of its bar there)
+    emit(phase, 0.15 + (g_prepare ? 0.55 : 0.85) * f, slow ? slow : "");
+}
+
+// --prepare (RecompLauncher, which starts the game straight after it) also prepares the shaders, as the Tauri launcher
+// does before Play: without this step every draw's pipeline is built during play, 20-30 fps with freezes of up to 2.4 s
+// in the first stage (RTX 3050 Laptop). The same hidden play run the Tauri launcher makes (launcher main.rs
+// run_shaders); its "phase shaders <0..1>" lines become the last 30% of the bar. A failure leaves play possible, so the
+// setup still succeeds.
+static void prepare_shaders(void) {
+    char exe[1024], cmd[1200], line[256];
+    if (!plat_exe_path(exe, sizeof exe)) return;
+    static const char *const vars[] = {"LARECOMP_HIDDEN", "LARECOMP_NO_USER_INPUT", "LARECOMP_SHADER_PREP",
+                                       "LARECOMP_SHADER_PREBUILD", "LARECOMP_SHADER_PREP_EXIT"};
+    for (size_t i = 0; i < sizeof vars / sizeof *vars; i++) setenv(vars[i], "1", 1);
+#ifdef _WIN32
+    snprintf(cmd, sizeof cmd, "\"\"%s\" " ROOT " --play\"", exe);  // (cmd.exe strips the outer quotes)
+#else
+    snprintf(cmd, sizeof cmd, "'%s' " ROOT " --play", exe);
+#endif
+    emit(SHADERS, 0.70, "");
+    FILE *p = popen(cmd, "r");
+    if (!p) { LOG("[setup] shaders: could not start the game to prepare them\n"); return; }
+    double f;
+    while (fgets(line, sizeof line, p))
+        if (sscanf(line, "phase shaders %lf", &f) == 1) emit(SHADERS, 0.70 + 0.30 * f, "");
+    int st = pclose(p);
+    LOG("[setup] shaders: %s\n", st ? "not prepared (they are built during play instead)" : "prepared");
 }
 
 // ------------------------------------------------------------------ the setup
@@ -233,6 +260,7 @@ int setup_cli_run(void) {
     }
     g_prepare = !strcmp(g_cmd, "prepare");
     int r = setup(!strcmp(g_cmd, "rebuild-code"));
+    if (g_prepare && !r) prepare_shaders();
     LOG("[setup] %s\n", r ? REASON[r - NOT_FOUND] : "ready");
     if (g_prepare) {
         if (!r) printf("progress 1 Ready\n");

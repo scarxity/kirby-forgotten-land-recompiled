@@ -1211,6 +1211,8 @@ bool vk_build_hold(void) {
                 (unsigned long long)(v[2] - was[2]), (v[3] - was[3]) / 1e6, (unsigned long long)(v[4] - was[4]), (v[5] - was[5]) / 1e6);
             memcpy(was, v, sizeof was);
         }
+        extern void bp_log(void);
+        bp_log();
         stat_skipped_held += waiting;
     }
     seen = cum_build_skips;
@@ -2077,8 +2079,9 @@ ShaderInfo *slow_translate(const uint8_t *code, size_t max_size, int stage, cons
 
 // A build the driver takes over a second for is logged with its shaders: draws and dispatches are skipped until it
 // is done, which looked like a rendering bug (the chain chomps' compute with the heap in chunks: never ready).
+static __thread bool bg_thread;  // (the handover threads: their builds nothing waits for stay out of the slow-frame log)
 static void slow_build(uint64_t t0, const char *what, uint64_t code0, uint64_t code1) {
-    slow_note_build(what, SDL_GetTicksNS() - t0);
+    if (!bg_thread) slow_note_build(what, SDL_GetTicksNS() - t0);
     uint64_t ms = (SDL_GetTicksNS() - t0) / 1000000;
     if (ms < 1000) return;
     static int n;
@@ -2103,25 +2106,64 @@ static bool spirv_strip_early_tests(uint32_t *w, size_t *nwords) {
     return false;
 }
 
+// (diagnostics, LARECOMP_BUILD_PROF=1) where build time goes, summed over all threads (ns) and logged with each held
+// frame: [0] SPIR-V loads, [1] reflection, [2] shader modules, [3] layouts, [4..7] library parts 0-3, [8] fast links,
+// [9] optimized links; bp_n: counts, bp_hit: parts the pipeline cache had
+static _Atomic uint64_t bp_ns[10], bp_n[10], bp_hit[4];
+static bool bp_on(void) {
+    static int v = -1;
+    if (v < 0) v = getenv("LARECOMP_BUILD_PROF") != NULL;
+    return v;
+}
+#define BP_T() (bp_on() ? SDL_GetTicksNS() : 0)
+#define BP_ADD(i, t) do { if (bp_on()) { atomic_fetch_add(&bp_ns[i], SDL_GetTicksNS() - (t)); atomic_fetch_add(&bp_n[i], 1); } } while (0)
+static _Atomic int lto_pending;
+void bp_log(void) {
+    if (!bp_on()) return;
+    static uint64_t was_ns[10], was_n[10], was_hit[4];
+    static const char *name[10] = {"spirv", "reflect", "modules", "layout", "vi", "pre", "fs", "fo", "link", "lto"};
+    char line[1024];
+    int o = snprintf(line, sizeof line, "[buildprof]");
+    for (int i = 0; i < 10; i++) {
+        uint64_t ns = atomic_load(&bp_ns[i]), n = atomic_load(&bp_n[i]);
+        if (n == was_n[i]) continue;
+        o += snprintf(line + o, sizeof line - (size_t)o, " %s %llu %.1f ms", name[i], (unsigned long long)(n - was_n[i]), (ns - was_ns[i]) / 1e6);
+        if (i >= 4 && i < 8) {
+            uint64_t h = atomic_load(&bp_hit[i - 4]);
+            o += snprintf(line + o, sizeof line - (size_t)o, " (%llu hit)", (unsigned long long)(h - was_hit[i - 4]));
+            was_hit[i - 4] = h;
+        }
+        o += snprintf(line + o, sizeof line - (size_t)o, ",");
+        was_ns[i] = ns, was_n[i] = n;
+    }
+    LOG("%s lto queued %d\n", line, atomic_load(&lto_pending));
+}
+
 static uint64_t hash_words(uint64_t h, const void *p, size_t n);
 static void compile_program(void *arg) {
     Prog *p = arg;
     uint64_t t0 = SDL_GetTicksNS();
     int bs = build_begin("modules vs/fs", p->code[0] ? p->code[0] : p->prep_vh, p->code[1] ? p->code[1] : p->prep_fh);
     size_t nv = 0, nf = 0;
+    uint64_t bt = BP_T();
     uint32_t *sv = p->vi->msl ? vk_glsl_to_spirv(p->vi->msl, STAGE_VERTEX, "vs", &nv) : vk_spirv_load(p->spv_key[0], &nv);
     uint32_t *sf = !sv ? NULL : p->fi->msl ? vk_glsl_to_spirv(p->fi->msl, STAGE_FRAGMENT, "fs", &nf) : vk_spirv_load(p->spv_key[1], &nf);
     size_t ng = 0;
     uint32_t *sg = !sf || !p->gi ? NULL : p->gi->msl ? vk_glsl_to_spirv(p->gi->msl, STAGE_GEOMETRY, "gs", &ng)
                                                      : vk_spirv_load(p->spv_key[2], &ng);
+    BP_ADD(0, bt);
     if (!sv || !sf || (p->gi && !sg)) { free(sv); free(sf); free(sg); atomic_store(&p->state, 2); build_end(bs); return; }
+    bt = BP_T();
     p->nbinds = vk_reflect(sv, nv, p->binds, MAX_BIND);
     p->nbinds += vk_reflect(sf, nf, p->binds + p->nbinds, MAX_BIND - p->nbinds);
     if (sg) p->nbinds += vk_reflect(sg, ng, p->binds + p->nbinds, MAX_BIND - p->nbinds);
+    BP_ADD(1, bt);
+    bt = BP_T();
     p->vs = vk_module(sv, nv);
     p->fs = vk_module(sf, nf);
     if (sg) p->gs = vk_module(sg, ng);
     if (spirv_strip_early_tests(sf, &nf)) p->fs_late = vk_module(sf, nf);
+    BP_ADD(2, bt);
     free(sv);
     free(sf);
     free(sg);
@@ -2129,8 +2171,10 @@ static void compile_program(void *arg) {
     free(p->vi->msl), p->vi->msl = NULL;
     free(p->fi->msl), p->fi->msl = NULL;
     if (p->gi) free(p->gi->msl), p->gi->msl = NULL;
+    bt = BP_T();
     mark_dynamic(p);
     p->layout = make_layout(p, 2, VK_SHADER_STAGE_VERTEX_BIT, VK_SHADER_STAGE_FRAGMENT_BIT);
+    BP_ADD(3, bt);
     atomic_fetch_add(&stat_compiles, 1);
     bool ok = p->vs && p->fs && (!p->gi || p->gs);
     if (!ok) LOG("[shader] vs/fs %llx %llx (gs %llx): shader module creation failed\n", (unsigned long long)p->code[0],
@@ -2356,6 +2400,12 @@ static void prep_put(PrepEnt **t, size_t *cap, size_t *n, uint64_t key, void *ob
 }
 #define PREP_GET(tab, key) ({ pthread_mutex_lock(&prep_lock); void *o_ = prep_get(tab, tab##_cap, key); pthread_mutex_unlock(&prep_lock); o_; })
 #define PREP_PUT(tab, key, obj) do { pthread_mutex_lock(&prep_lock); prep_put(&tab, &tab##_cap, &tab##_n, key, obj); pthread_mutex_unlock(&prep_lock); } while (0)
+static void *prep_put_new(PrepEnt **t, size_t *cap, size_t *n, uint64_t key, void *obj) {  // the object there after
+    void *o = prep_get(*t, *cap, key);
+    if (!o) prep_put(t, cap, n, key, obj), o = obj;
+    return o;
+}
+#define PREP_PUT_NEW(tab, key, obj) ({ pthread_mutex_lock(&prep_lock); void *o_ = prep_put_new(&tab, &tab##_cap, &tab##_n, key, obj); pthread_mutex_unlock(&prep_lock); o_; })
 
 // The kinds of the targets the fragment shader writes only (its header's output map, as the translator reads it):
 // a target it doesn't write gets no output in the code, so its kind can't change the program (translate.c). A draw
@@ -2441,10 +2491,14 @@ static Prog *get_program_(NvnProgram *np, ShaderKey *vkey, ShaderKey *fkey) {
         prog_fp_check(prog_tab[slot].prog, np);
         return prog_tab[slot].prog;
     }
-    if (!gs && !vs_only) {  // prepared before the game (the same code and keys; vertex + fragment only)
+    // Prepared before the game, or met before at another address: found by content (the same code and keys; vertex +
+    // fragment only). The game loads the same shaders at several addresses (each model's archive has its own copy):
+    // an area's first frame met 414 programs of ~170 contents, each set up and its pipelines built again.
+    uint64_t ck = 0;
+    if (!gs && !vs_only) {
         uint64_t vh = shader_stage_hash(&np->stages[0]), fh = shader_stage_hash(&np->stages[1]);
-        uint64_t ck = prog_content_key(vh, fh, vkey, fkey);
-        Prog *pp = vh && fh && prep_progs_n ? PREP_GET(prep_progs, ck) : NULL;
+        ck = vh && fh ? prog_content_key(vh, fh, vkey, fkey) : 0;
+        Prog *pp = ck && prep_progs_n ? PREP_GET(prep_progs, ck) : NULL;
         if (pp) {
             prog_tab[slot].key = h;
             prog_tab[slot].prog = pp;
@@ -2457,6 +2511,7 @@ static Prog *get_program_(NvnProgram *np, ShaderKey *vkey, ShaderKey *fkey) {
     prog_fp_check(p, np);  // (takes the fingerprint)
     prog_tab[slot].key = h;
     prog_tab[slot].prog = p;
+    if (ck) PREP_PUT_NEW(prep_progs, ck, p);
     for (int i = 0; i < (gs ? 3 : 2); i++) {
         p->code[i] = np->stages[i].code_addr;
         p->cmax[i] = np->stages[i].const_offset ? np->stages[i].const_offset : 0x10000;
@@ -2947,7 +3002,15 @@ static VkResult gpl_part_make(int part, const PipeCI *c, VkPipeline *out) {
         pre[0] = c->stages[0], pre[1] = c->stages[2];
         pi.stageCount = 2, pi.pStages = pre;
     }
-    return vkCreateGraphicsPipelines(g_vk.dev, g_vk.pcache, 1, &pi, NULL, out);
+    VkPipelineCreationFeedback fb = {0};
+    VkPipelineCreationFeedbackCreateInfo fbi = {.sType = VK_STRUCTURE_TYPE_PIPELINE_CREATION_FEEDBACK_CREATE_INFO,
+                                                .pNext = li.pNext, .pPipelineCreationFeedback = &fb};
+    if (bp_on()) li.pNext = &fbi;
+    uint64_t bt = BP_T();
+    VkResult r = vkCreateGraphicsPipelines(g_vk.dev, g_vk.pcache, 1, &pi, NULL, out);
+    BP_ADD(4 + part, bt);
+    if (fb.flags & VK_PIPELINE_CREATION_FEEDBACK_APPLICATION_PIPELINE_CACHE_HIT_BIT) atomic_fetch_add(&bp_hit[part], 1);
+    return r;
 }
 
 // The parts' keys: what each one bakes in (pipe_ci_fill), the program by address
@@ -2973,7 +3036,10 @@ static VkResult gpl_link(VkPipeline lib[4], VkPipelineLayout layout, bool optimi
     VkPipelineLibraryCreateInfoKHR li = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LIBRARY_CREATE_INFO_KHR, .libraryCount = 4, .pLibraries = lib};
     VkGraphicsPipelineCreateInfo pi = {.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, .pNext = &li,
         .flags = optimized ? VK_PIPELINE_CREATE_LINK_TIME_OPTIMIZATION_BIT_EXT : 0, .layout = layout};
-    return vkCreateGraphicsPipelines(g_vk.dev, g_vk.pcache, 1, &pi, NULL, out);
+    uint64_t bt = BP_T();
+    VkResult r = vkCreateGraphicsPipelines(g_vk.dev, g_vk.pcache, 1, &pi, NULL, out);
+    BP_ADD(optimized ? 9 : 8, bt);
+    return r;
 }
 
 // The optimized links, one at a time on their own thread (newest first is no better: the queue is short)
@@ -2984,6 +3050,7 @@ static pthread_cond_t lto_cond = PTHREAD_COND_INITIALIZER;
 static void *lto_thread(void *a) {
     (void)a;
     plat_thread_default_core();
+    plat_thread_background();
     for (;;) {
         pthread_mutex_lock(&lto_lock);
         while (!lto_head) pthread_cond_wait(&lto_cond, &lto_lock);
@@ -2991,10 +3058,13 @@ static void *lto_thread(void *a) {
         lto_head = j->next;
         if (!lto_head) lto_tail = NULL;
         pthread_mutex_unlock(&lto_lock);
+        // (an optimized link is a whole compile, 100-500 ms: one running beside an area's first builds doubled them)
+        while (atomic_load(&jobs_pending) > 0) { struct timespec ts = {0, 2000000}; nanosleep(&ts, NULL); }
         VkPipeline opt;
         // (the fast-linked one stays alive: command buffers recorded with it may still be in flight)
         if (gpl_link(j->lib, j->pp->k.prog->layout, true, &opt) == VK_SUCCESS) __atomic_store_n(&j->pp->pipe, opt, __ATOMIC_RELEASE);
         free(j);
+        atomic_fetch_sub(&lto_pending, 1);
     }
     return NULL;
 }
@@ -3009,6 +3079,7 @@ static void lto_queue(Pipe *pp, VkPipeline lib[4]) {
     LtoJob *j = calloc(1, sizeof *j);
     j->pp = pp;
     memcpy(j->lib, lib, sizeof j->lib);
+    atomic_fetch_add(&lto_pending, 1);
     pthread_mutex_lock(&lto_lock);
     if (lto_tail) lto_tail->next = j; else lto_head = j;
     lto_tail = j;
@@ -6608,14 +6679,8 @@ void renderer_prepare_end(void) {
     }
 }
 
-typedef struct { Pipe *pp; ShaderRec r; } PrepPipe;
-static void prep_pipeline(void *arg) {
-    PrepPipe *a = arg;
-    Prog *pr = a->pp->k.prog;
-    // its program's compile was queued before (the queue is first in, first out): wait for it to finish
-    while (atomic_load(&pr->state) == 0) { struct timespec ts = {0, 1000000}; nanosleep(&ts, NULL); }
-    if (atomic_load(&pr->state) != 1) { atomic_store(&a->pp->state, 2); free(a); return; }
-    const ShaderRec *r = &a->r;
+// The pipeline key a draw makes for a record's state, with program pr
+static void rec_pipe_key(PipeKey *k, Prog *pr, const ShaderRec *r) {
     // the pass's attachment formats as begin_pass makes them for these targets
     VkFormat color[8] = {0}, depth = VK_FORMAT_UNDEFINED, stencil = VK_FORMAT_UNDEFINED;
     uint32_t ncolor = r->ncolor;
@@ -6633,7 +6698,32 @@ static void prep_pipeline(void *arg) {
     }
     const PipeIn in = {r->attrib, r->nattrib, r->stream, r->nstream, r->color, r->channel_mask, r->blend_on, r->blend,
                        r->a2c, r->topo, r->poly_fill};
-    pipe_key_fill(&a->pp->k, pr, &in, color, ncolor, depth, stencil, r->samples ? r->samples : 1, NULL);
+    pipe_key_fill(k, pr, &in, color, ncolor, depth, stencil, r->samples ? r->samples : 1, NULL);
+}
+
+// The program keys a draw makes for a record's state (draw_), fs_code: its fragment shader's code
+static void rec_prog_keys(const ShaderRec *r, const uint8_t *fs_code, ShaderKey *vkey, ShaderKey *fkey) {
+    memset(vkey, 0, sizeof *vkey);
+    memset(fkey, 0, sizeof *fkey);
+    vkey->glsl = fkey->glsl = 1;
+    vkey->flip_y = fkey->flip_y = (r->flags & SR_FLIP_Y) != 0;
+    vkey->depth_minus_one = (r->flags & SR_DEPTH_MINUS_ONE) != 0;
+    vkey->flip_x = fkey->flip_x = (r->flags & SR_FLIP_X) != 0;
+    for (int i = 0; i < r->nattrib; i++) vkey->attr_kind[i] = (uint8_t)attr_kind(r->attrib[i] & 0xFF);
+    for (int i = 0; i < r->ncolor && i < 8; i++) if (r->color[i]) fkey->rt_kind[i] = (uint8_t)rt_kind(r->color[i]);
+    rt_kinds_written(fkey, fs_code);
+    fkey->tex_uint = r->tex_uint, fkey->tex_sint = r->tex_sint;
+}
+
+typedef struct { Pipe *pp; ShaderRec r; } PrepPipe;
+static void prep_pipeline(void *arg) {
+    PrepPipe *a = arg;
+    Prog *pr = a->pp->k.prog;
+    // its program's compile was queued before (the queue is first in, first out): wait for it to finish
+    while (atomic_load(&pr->state) == 0) { struct timespec ts = {0, 1000000}; nanosleep(&ts, NULL); }
+    if (atomic_load(&pr->state) != 1) { atomic_store(&a->pp->state, 2); free(a); return; }
+    const ShaderRec *r = &a->r;
+    rec_pipe_key(&a->pp->k, pr, r);
     if (r->flags & SR_WARM) {
         // The shader parts into our pipeline cache, then dropped: a draw links its own pipeline from them in a fraction
         // of a millisecond. (The driver's own disk cache didn't give them back to the next process: measured, 317 parts
@@ -6683,15 +6773,8 @@ bool renderer_prepare(const ShaderRec *r, const ShaderBlob *vsb, const ShaderBlo
         prep_job(build_compute, cp);
         return true;
     }
-    // the keys the draw path makes for this state (draw_)
-    ShaderKey vkey = {0}, fkey = {0};
-    vkey.glsl = fkey.glsl = 1;
-    vkey.flip_y = fkey.flip_y = (r->flags & SR_FLIP_Y) != 0;
-    vkey.depth_minus_one = (r->flags & SR_DEPTH_MINUS_ONE) != 0;
-    vkey.flip_x = fkey.flip_x = (r->flags & SR_FLIP_X) != 0;
-    for (int i = 0; i < r->nattrib; i++) vkey.attr_kind[i] = (uint8_t)attr_kind(r->attrib[i] & 0xFF);
-    for (int i = 0; i < r->ncolor && i < 8; i++) if (r->color[i]) fkey.rt_kind[i] = (uint8_t)rt_kind(r->color[i]);
-    rt_kinds_written(&fkey, fsb->code);
+    ShaderKey vkey, fkey;
+    rec_prog_keys(r, fsb->code, &vkey, &fkey);
     uint64_t ck = prog_content_key(r->vs, r->fs, &vkey, &fkey);
     bool warm = (r->flags & SR_WARM) != 0;  // (the pre-build: built for the driver's cache, then freed: prep_pipeline)
     Prog *p = warm ? NULL : PREP_GET(prep_progs, ck);
@@ -6726,6 +6809,276 @@ bool renderer_prepare(const ShaderRec *r, const ShaderBlob *vsb, const ShaderBlo
     a->r = *r;
     prep_job(prep_pipeline, a);
     return true;
+}
+
+// ================================================================== programs set up as the game hands them over
+// The game hands its programs over as it loads (nvnProgramSetShaders: 6,372 at a stage load, in 0.3 s), seconds
+// before their first draws, as a native game builds an asset's pipelines while it streams in. Each is set up then, on
+// background threads: translated (cache/translations.bin), its SPIR-V loaded and its modules made, and either
+//   - the pipelines this player's game built with it before, whole: every pipeline a draw builds is recorded
+//     (cache/shader_seen.txt, shader_seen.c), and each launch builds the recorded ones as their program comes; or
+//   - (none recorded) its two shader parts of the graphics pipeline library, for the draw state the prepare step built
+//     them for (shader_prep.c: plain float targets, and an unsigned last target), from the pipeline cache.
+// A first draw then finds its pipeline ready, or links it from those parts (the shared fragment output part and a
+// fast link: well under a millisecond). Measured at an area's entry before this: ~150 programs' shader parts taken from
+// the cache at the first draw, 1.5-5 ms each with a dozen threads at it, held the frame 140-280 ms.
+// What is set up is published (prep_progs / prep_pipes, by content) only when complete, and only if nothing is there
+// yet: a draw that comes first builds its own as before, counted by the frame hold, and never finds one half built.
+// The threads run below the game's priority and start no work while a draw waits for a build (jobs_pending).
+typedef struct HandJob {
+    uint64_t code[2], vh, fh;
+    uint32_t coff[2], csize[2];
+    struct HandJob *next;
+} HandJob;
+static struct { HandJob *head, *tail; } hq[3];  // 0 handed over (not hashed yet), 1 with recorded pipelines, 2 the rest
+static pthread_mutex_t hq_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t hq_cond = PTHREAD_COND_INITIALIZER;
+static int hq_busy;          // (hq_lock) workers on a job
+static uint64_t *hand_seen;  // (hq_lock) the programs' hash pairs met (open addressing, 0 empty)
+static size_t hand_seen_cap, hand_seen_n;
+static _Atomic uint64_t hand_n[6], hand_ns;  // handed over, distinct, recorded; programs set up, parts, pipelines
+
+static ShaderRec *hrec;  // the player's recorded pipelines, by (vs, fs)
+static size_t hrec_n;
+static int hrec_cmp(const void *a, const void *b) {
+    const ShaderRec *x = a, *y = b;
+    return x->vs != y->vs ? (x->vs < y->vs ? -1 : 1) : x->fs != y->fs ? (x->fs < y->fs ? -1 : 1) : 0;
+}
+static void hrec_load(void) {
+    uint64_t game;
+    char *d = shader_seen_read(&game);
+    size_t cap = 0;
+    for (char *line = d, *next; line && *line; line = next) {
+        next = strchr(line, '\n');
+        if (next) *next++ = 0;
+        else next = line + strlen(line);
+        ShaderRec r;
+        if (!shader_rec_parse(line, &r) || r.kind != 'G') continue;
+        if (hrec_n == cap) hrec = realloc(hrec, (cap = cap ? cap * 2 : 1024) * sizeof *hrec);
+        hrec[hrec_n++] = r;
+    }
+    free(d);
+    if (hrec_n) qsort(hrec, hrec_n, sizeof *hrec, hrec_cmp);
+    LOG("[vk] pipelines recorded in earlier plays: %zu\n", hrec_n);
+}
+static const ShaderRec *hrec_find(uint64_t vs, uint64_t fs, int *n) {
+    static pthread_once_t once = PTHREAD_ONCE_INIT;
+    pthread_once(&once, hrec_load);
+    ShaderRec key = {.vs = vs, .fs = fs};
+    size_t lo = 0, hi = hrec_n;
+    while (lo < hi) {
+        size_t m = (lo + hi) / 2;
+        if (hrec_cmp(&hrec[m], &key) < 0) lo = m + 1;
+        else hi = m;
+    }
+    size_t e = lo;
+    while (e < hrec_n && !hrec_cmp(&hrec[e], &key)) e++;
+    *n = (int)(e - lo);
+    return hrec + lo;
+}
+
+static bool hand_seen_add(uint64_t h) {  // (hq_lock) false: met before
+    if (!h) h = 1;
+    if (hand_seen_n * 2 >= hand_seen_cap) {
+        size_t cap = hand_seen_cap ? hand_seen_cap * 2 : 8192;
+        uint64_t *t = calloc(cap, sizeof *t);
+        for (size_t i = 0; i < hand_seen_cap; i++)
+            if (hand_seen[i]) {
+                size_t j = hand_seen[i] & (cap - 1);
+                while (t[j]) j = (j + 1) & (cap - 1);
+                t[j] = hand_seen[i];
+            }
+        free(hand_seen);
+        hand_seen = t, hand_seen_cap = cap;
+    }
+    size_t j = h & (hand_seen_cap - 1);
+    while (hand_seen[j]) {
+        if (hand_seen[j] == h) return false;
+        j = (j + 1) & (hand_seen_cap - 1);
+    }
+    hand_seen[j] = h;
+    hand_seen_n++;
+    return true;
+}
+
+static void hq_push(int q, HandJob *j) {  // (hq_lock)
+    j->next = NULL;
+    if (hq[q].tail) hq[q].tail->next = j;
+    else hq[q].head = j;
+    hq[q].tail = j;
+    pthread_cond_signal(&hq_cond);
+}
+
+static void hand_yield(void) {  // (a draw waits for a build: the driver and the cores are theirs)
+    while (atomic_load(&jobs_pending) > 0) { struct timespec ts = {0, 2000000}; nanosleep(&ts, NULL); }
+}
+
+static uint64_t hand_hash(const HandJob *j, int s) {
+    return shader_code_hash((const uint8_t *)(uintptr_t)j->code[s], (size_t)j->coff[s] + j->csize[s]);
+}
+
+static void hand_classify(HandJob *j) {
+    j->vh = hand_hash(j, 0), j->fh = hand_hash(j, 1);
+    int n = 0;
+    if (j->vh && j->fh) hrec_find(j->vh, j->fh, &n);
+    pthread_mutex_lock(&hq_lock);
+    bool fresh = j->vh && j->fh && hand_seen_add(hash_words(j->vh, &j->fh, 8));
+    if (fresh) {
+        atomic_fetch_add(&hand_n[1], 1);
+        if (n) atomic_fetch_add(&hand_n[2], 1);
+        hq_push(n ? 1 : 2, j);
+    }
+    pthread_mutex_unlock(&hq_lock);
+    if (!fresh) free(j);
+}
+
+static void prog_drop(Prog *p) {  // (a program nothing else holds)
+    VkShaderModule m[4] = {p->vs, p->fs, p->gs, p->fs_late};
+    for (int i = 0; i < 4; i++) if (m[i]) vkDestroyShaderModule(g_vk.dev, m[i], NULL);
+    if (p->layout) vkDestroyPipelineLayout(g_vk.dev, p->layout, NULL);
+    maxwell_free(p->vi), maxwell_free(p->fi), free(p);
+}
+
+// The program for these keys: the one already there (set up or building), or one set up and published now. NULL: none
+static Prog *hand_program(const HandJob *j, const ShaderKey *vkey, const ShaderKey *fkey) {
+    uint64_t ck = prog_content_key(j->vh, j->fh, vkey, fkey);
+    Prog *p = PREP_GET(prep_progs, ck);
+    if (!p) {
+        p = calloc(1, sizeof *p);
+        for (int i = 0; i < 2; i++) p->code[i] = j->code[i], p->cmax[i] = j->coff[i], p->csize[i] = j->csize[i];
+        p->vkey = *vkey, p->fkey = *fkey;
+        p->prep_vh = j->vh, p->prep_fh = j->fh;
+        bool ok = translate_program_now(p);
+        // (the code read again: memory the game reused since it handed the program over holds no program of it)
+        if (ok && (hand_hash(j, 0) != j->vh || hand_hash(j, 1) != j->fh)) ok = false;
+        if (ok) compile_program(p);
+        if (!ok || atomic_load(&p->state) != 1) { prog_drop(p); return NULL; }
+        Prog *q = PREP_PUT_NEW(prep_progs, ck, p);
+        if (q != p) prog_drop(p), p = q;
+        else atomic_fetch_add(&hand_n[3], 1);
+    }
+    while (atomic_load(&p->state) == 0) { struct timespec ts = {0, 1000000}; nanosleep(&ts, NULL); }  // (a draw's)
+    return atomic_load(&p->state) == 1 ? p : NULL;
+}
+
+static void hand_pipeline(Prog *p, const ShaderRec *r) {
+    Pipe *pp = calloc(1, sizeof *pp);
+    rec_pipe_key(&pp->k, p, r);
+    uint64_t ph = hash_words(0xcbf29ce484222325ull, &pp->k, sizeof pp->k);
+    if (!ph) ph = 1;
+    if (PREP_GET(prep_pipes, ph)) { free(pp); return; }
+    hand_yield();
+    build_pipeline(pp);
+    if (atomic_load(&pp->state) != 1) { free(pp); return; }
+    PREP_PUT_NEW(prep_pipes, ph, pp);  // (one program's records are one job's: no other thread builds this key)
+    atomic_fetch_add(&hand_n[5], 1);
+}
+
+static void hand_parts(Prog *p, const ShaderRec *r) {
+    extern bool vk_gpl_usable(void);
+    if (!vk_gpl_usable()) return;  // (no library parts: the program's setup is what can be done ahead)
+    PipeKey k;
+    rec_pipe_key(&k, p, r);
+    PipeCI c;
+    pipe_ci_fill(&c, &k);
+    uint64_t key[4];
+    gpl_keys(&k, key);
+    for (int part = 1; part <= 2; part++) {
+        hand_yield();
+        if (gpl_part(part, key[part], &c)) atomic_fetch_add(&hand_n[4], 1);
+    }
+}
+
+// The draw states the prepare step built a program without records for (shader_prep.c prep_run_locked)
+static int hand_guess(const HandJob *j, ShaderRec g[2]) {
+    extern uint32_t nvn_window_origin(void), nvn_depth_mode(void);
+    g[0] = (ShaderRec){.kind = 'G', .vs = j->vh, .fs = j->fh, .ncolor = 1, .samples = 1, .channel_mask = 0xF, .topo = 2, .poly_fill = 1};
+    g[0].color[0] = 0x38;
+    g[0].flags = (nvn_window_origin() == 0 ? SR_FLIP_Y : 0) | (nvn_depth_mode() == 0 ? SR_DEPTH_MINUS_ONE : 0);
+    uint32_t omap;
+    memcpy(&omap, (const uint8_t *)(uintptr_t)j->code[1] + 0x30 + 0x48, 4);
+    int last = -1, written = 0;
+    for (int rt = 0; rt < 8; rt++) if ((omap >> (rt * 4)) & 0xF) last = rt, written++;
+    if (written < 2) return 1;
+    g[1] = g[0];
+    g[1].ncolor = (uint8_t)(last + 1);
+    for (int rt = 0; rt <= last; rt++) g[1].color[rt] = rt == last ? 0x03 : 0x38;
+    return 2;
+}
+
+static void hand_setup(const HandJob *j, bool recorded) {
+    ShaderRec guess[2];
+    int n = 0;
+    const ShaderRec *recs = recorded ? hrec_find(j->vh, j->fh, &n) : NULL;
+    if (!n) n = hand_guess(j, guess), recs = guess, recorded = false;
+    for (int i = 0; i < n; i++) {
+        ShaderKey vkey, fkey;
+        rec_prog_keys(&recs[i], (const uint8_t *)(uintptr_t)j->code[1], &vkey, &fkey);
+        hand_yield();
+        Prog *p = hand_program(j, &vkey, &fkey);
+        if (!p) continue;
+        if (recorded) hand_pipeline(p, &recs[i]);
+        else hand_parts(p, &recs[i]);
+    }
+}
+
+static void *hand_worker(void *a) {
+    (void)a;
+    plat_thread_background();
+    bg_thread = true;
+    for (;;) {
+        pthread_mutex_lock(&hq_lock);
+        while (!hq[0].head && !hq[1].head && !hq[2].head) {
+            static uint64_t logged;  // (each time the queues run dry with something done since)
+            uint64_t done = atomic_load(&hand_n[3]) + atomic_load(&hand_n[5]);
+            if (!hq_busy && done != logged) {
+                logged = done;
+                LOG("[vk] programs handed over: %llu, %llu distinct, %llu with recorded pipelines; set up %llu programs, %llu "
+                    "shader parts, %llu recorded pipelines (%.0f ms thread time); memory %.2f GB\n",
+                    (unsigned long long)hand_n[0], (unsigned long long)hand_n[1], (unsigned long long)hand_n[2],
+                    (unsigned long long)hand_n[3], (unsigned long long)hand_n[4], (unsigned long long)hand_n[5],
+                    atomic_load(&hand_ns) / 1e6, plat_mem_used_bytes() / 1073741824.0);
+            }
+            pthread_cond_wait(&hq_cond, &hq_lock);
+        }
+        int q = hq[1].head ? 1 : hq[0].head ? 0 : 2;
+        HandJob *j = hq[q].head;
+        if (!(hq[q].head = j->next)) hq[q].tail = NULL;
+        hq_busy++;
+        pthread_mutex_unlock(&hq_lock);
+        uint64_t t0 = SDL_GetTicksNS();
+        if (q == 0) hand_classify(j);
+        else hand_setup(j, q == 1), free(j);
+        atomic_fetch_add(&hand_ns, SDL_GetTicksNS() - t0);
+        pthread_mutex_lock(&hq_lock);
+        hq_busy--;
+        pthread_mutex_unlock(&hq_lock);
+    }
+    return NULL;
+}
+
+static void hand_start(void) {
+    int n = plat_cpu_count();
+    if (n <= 0) n = SDL_GetNumLogicalCPUCores();
+    n = n / 4 < 1 ? 1 : n / 4 > 4 ? 4 : n / 4;  // (the parts come from one pipeline cache: more threads wait more)
+    for (int i = 0; i < n; i++) {
+        pthread_t t;
+        if (!pthread_create(&t, NULL, hand_worker, NULL)) pthread_detach(t);
+    }
+}
+
+void renderer_program_handover(const NvnProgram *np) {
+    if ((np->stage_mask & 0x3F) != 3 || sync_shaders() || !g_vk.dev) return;  // (vertex + fragment programs)
+    if (!np->stages[0].const_offset || !np->stages[1].const_offset) return;  // (no constants to bound the code: not hashable)
+    static pthread_once_t once = PTHREAD_ONCE_INIT;
+    pthread_once(&once, hand_start);
+    HandJob *j = malloc(sizeof *j);
+    for (int i = 0; i < 2; i++)
+        j->code[i] = np->stages[i].code_addr, j->coff[i] = np->stages[i].const_offset, j->csize[i] = np->stages[i].const_size;
+    atomic_fetch_add(&hand_n[0], 1);
+    pthread_mutex_lock(&hq_lock);
+    hq_push(0, j);
+    pthread_mutex_unlock(&hq_lock);
 }
 
 // ================================================================== graphics pipeline library probe (measurement only)
@@ -7176,6 +7529,7 @@ static void draw_(CmdRec *r, bool indexed) {
             if (shader_rec_recording() && !pr->gi && !pr->vs_only) {  // (variant records: vertex + fragment programs only)
                 ShaderRec rec;
                 rec_from_state(&rec, vkey.flip_x, mode);
+                rec.tex_uint = fkey.tex_uint, rec.tex_sint = fkey.tex_sint;  // (the program this draw found for them)
                 shader_rec_note(&rec);
             }
             pp = prep_pipes_n ? PREP_GET(prep_pipes, ph) : NULL;  // prepared before the game
@@ -7186,6 +7540,7 @@ static void draw_(CmdRec *r, bool indexed) {
                 if (prep_check_on()) {
                     ShaderRec rec;
                     rec_from_state(&rec, vkey.flip_x, mode);
+                    rec.tex_uint = fkey.tex_uint, rec.tex_sint = fkey.tex_sint;
                     prep_check(&k, vh, fh, &rec);
                 }
                 pp = calloc(1, sizeof *pp);

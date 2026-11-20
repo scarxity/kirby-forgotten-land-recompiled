@@ -200,6 +200,7 @@ int plat_cpu_count(void) {
 }
 
 void plat_thread_guest(int prio) { (void)prio; }  // (the OS's default scheduling serves the game here)
+void plat_thread_background(void) { SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL); }
 
 // ---- performance cores (hybrid CPUs: P-cores + E-cores)
 // Windows may run the game, render and vsync threads on efficiency cores, where they run far slower (another Switch

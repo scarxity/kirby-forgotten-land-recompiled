@@ -44,6 +44,7 @@ typedef struct {
     uint8_t topo;            // primitive class: 0 points, 1 lines, 2 triangles
     uint8_t poly_fill;       // filled polygons (0: lines)
     uint32_t local[3];       // compute: local size
+    uint64_t tex_uint, tex_sint;  // fragment texture slots bound to unsigned / signed integer views (they change the program)
 } ShaderRec;
 
 // The record's text form (one line, no newline) and back
@@ -108,6 +109,10 @@ typedef struct {
 bool renderer_prepare_begin(void);
 bool renderer_prepare(const ShaderRec *r, const ShaderBlob *vs, const ShaderBlob *fs);
 int renderer_prepare_pending(void);
+// (objects.c, the game thread) the game handed program p over (nvnProgramSetShaders): its setup and the pipelines
+// recorded for it are queued for background threads (Vulkan: exec.c); returns at once
+struct NvnProgram;
+void renderer_program_handover(const struct NvnProgram *p);
 void renderer_prepare_end(void);  // all builds done (e.g. keep the pipeline cache)
 
 // Prepares every record of the shipped list (LARECOMP_SHADER_LIST=<file>: that list instead) from the game files in

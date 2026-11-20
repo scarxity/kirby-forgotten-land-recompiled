@@ -65,6 +65,7 @@ uint8_t shader_topo_class(uint32_t mode) { return mode == 0 ? 0 : mode == 1 || m
 // ------------------------------------------------------------------ text form
 // G vs=<hash> fs=<hash> f=<flags> a=<attrib,...> s=<stride/divisor,...> c=<format[:view],...> d=<depth> n=<samples>
 //   m=<channel mask> b=<blend enables> B=<blend state of each target, 16 hex digits,...> k=<a2c> t=<topology> p=<fill>
+//   [x=<integer texture slots: unsigned/signed>] (only when any)
 // C cs=<hash> l=<x,y,z>
 void shader_rec_format(const ShaderRec *r, char *out, size_t n) {
     size_t o = 0;
@@ -91,6 +92,7 @@ void shader_rec_format(const ShaderRec *r, char *out, size_t n) {
         for (int k = 0; k < 8; k++) PUT("%02x", r->blend[i][k]);
     }
     PUT(" k=%u t=%u p=%u", r->a2c, r->topo, r->poly_fill);
+    if (r->tex_uint || r->tex_sint) PUT(" x=%" PRIx64 "/%" PRIx64, r->tex_uint, r->tex_sint);
 #undef PUT
 }
 
@@ -177,6 +179,11 @@ bool shader_rec_parse(const char *line, ShaderRec *r) {
     if ((v = field(line, "k"))) r->a2c = (uint8_t)strtoul(v, NULL, 16);
     r->topo = (v = field(line, "t")) ? (uint8_t)strtoul(v, NULL, 16) : 2;
     r->poly_fill = (v = field(line, "p")) ? (uint8_t)strtoul(v, NULL, 16) : 1;
+    if ((v = field(line, "x"))) {
+        char *e;
+        r->tex_uint = strtoull(v, &e, 16);
+        if (*e == '/') r->tex_sint = strtoull(e + 1, NULL, 16);
+    }
     return r->vs && r->fs;
 }
 

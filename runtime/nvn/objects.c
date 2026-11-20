@@ -7,6 +7,7 @@
 #include "nvn.h"
 #include "interp.h"
 #include "rqueue.h"
+#include "shader_prep.h"
 
 void renderer_sync(void);
 
@@ -750,6 +751,7 @@ static void set_shaders(Cpu *c, int stride) {
         p->stages[stage].const_size = *(const uint32_t *)(control + 0x6FC);
         p->stage_mask |= 1u << stage;
     }
+    renderer_program_handover(p);
     RET(1);
 }
 

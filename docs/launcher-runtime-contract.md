@@ -122,7 +122,9 @@ Failure reasons after `failed`: the `--check` ones, and
 ### `--prepare <folder>` (RecompLauncher)
 The same setup as `--setup`, with the output RecompLauncher parses: `progress <0..1> <text>` where the text is one of
 `Looking for the game files`, `Copying the game files`, `Reading the game code`, `Compiling the game code` and
-`Finishing`, followed by the slow-file text `(<file>, <n> min)` when there is one. Success ends with `progress 1 Ready`
+`Finishing`, followed by the slow-file text `(<file>, <n> min)` when there is one, then `Preparing shaders` (the
+Tauri launcher's shader step, run as a hidden child `extracted --play`: the game code is 15-70% of the bar, the shaders
+70-100%; a failed shader step still ends in Ready, and the shaders are then built during play). Success ends with `progress 1 Ready`
 and exit 0. Without `LARECOMP_DATA_ROOT` the data root is the folder of the exe, wherever it was started from, and the
 folder argument is resolved before the working directory changes. A failure exits with its code and prints nothing more:
 
