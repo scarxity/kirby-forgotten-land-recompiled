@@ -596,6 +596,22 @@ static const char shipped_list[] =
 
 const char *shader_prep_shipped_list(void) { return shipped_list; }
 
+char *shader_prep_list_read(void) {
+    const char *path = getenv("LARECOMP_SHADER_LIST");
+    if (!path) return strdup(shipped_list);
+    char *list = NULL;
+    FILE *f = fopen(path, "rb");
+    if (f) {
+        fseek(f, 0, SEEK_END);
+        long n = ftell(f);
+        fseek(f, 0, SEEK_SET);
+        list = calloc(1, (size_t)(n > 0 ? n : 0) + 1);
+        if (n > 0 && fread(list, 1, (size_t)n, f) != (size_t)n) list[0] = 0;
+        fclose(f);
+    }
+    return list;
+}
+
 // The game files' shaders as one id (order-independent): another game version has another
 static uint64_t idx_game_id(void) {
     uint64_t g = idx_n;
@@ -621,18 +637,7 @@ bool shader_prep_run(const char *romfs, void (*progress)(int done, int total), c
 
 static bool prep_run_locked(const char *romfs, void (*progress)(int done, int total), const volatile int *cancel) {
     double t0 = ms_now();
-    char *list = NULL;
-    if (getenv("LARECOMP_SHADER_LIST")) {
-        FILE *f = fopen(getenv("LARECOMP_SHADER_LIST"), "rb");
-        if (f) {
-            fseek(f, 0, SEEK_END);
-            long n = ftell(f);
-            fseek(f, 0, SEEK_SET);
-            list = calloc(1, (size_t)(n > 0 ? n : 0) + 1);
-            if (n > 0 && fread(list, 1, (size_t)n, f) != (size_t)n) list[0] = 0;
-            fclose(f);
-        }
-    } else list = strdup(shipped_list);
+    char *list = shader_prep_list_read();
     uint64_t seen_game;
     char *seen = shader_seen_read(&seen_game);  // (the player's own list: after the shipped one, or alone)
     bool all = getenv("LARECOMP_SHADER_PREBUILD") && atoi(getenv("LARECOMP_SHADER_PREBUILD"));
