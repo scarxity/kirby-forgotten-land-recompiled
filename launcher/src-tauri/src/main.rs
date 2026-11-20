@@ -865,6 +865,23 @@ fn play(app: St) -> Result<(), String> {
         return start_game(&app, &mut game);
     }
     drop(game);
+    shaders_then(app, true)
+}
+
+/// Home's "Set up" when the shaders need preparing again (after an update, a driver or a mod change): only that step,
+/// then Play shows.
+#[tauri::command]
+fn prepare_shaders(app: St) -> Result<(), String> {
+    if app.updater.working() {
+        return Err(UPDATING.into());
+    }
+    if !app.built() {
+        return Err("The game code was not built by this version of the program. Open Set up and build it again.".into());
+    }
+    shaders_then(app, false)
+}
+
+fn shaders_then(app: St, play: bool) -> Result<(), String> {
     {
         let mut job = app.job.lock().unwrap();
         if !matches!(job.phase, Phase::Idle | Phase::Failed) {
@@ -877,7 +894,7 @@ fn play(app: St) -> Result<(), String> {
         let result = fs::File::create(app.work.join("setup.log"))
             .map_err(|e| e.to_string())
             .and_then(|mut log| run_shaders(&app, &mut log))
-            .and_then(|()| start_game(&app, &mut app.game.lock().unwrap()));
+            .and_then(|()| if play { start_game(&app, &mut app.game.lock().unwrap()) } else { Ok(()) });
         let mut job = app.job.lock().unwrap();
         match result {
             Ok(()) => job.phase = Phase::Idle,
@@ -1163,7 +1180,7 @@ fn main() {
             }
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![status, set_game_dir, start_setup, cancel_setup, play, set_settings, set_prefs, backup_saves, set_mod, move_mod, open_path, dismiss_crash, start_update, cancel_update, check_update, set_pref])
+        .invoke_handler(tauri::generate_handler![status, set_game_dir, start_setup, cancel_setup, play, prepare_shaders, set_settings, set_prefs, backup_saves, set_mod, move_mod, open_path, dismiss_crash, start_update, cancel_update, check_update, set_pref])
         .run(tauri::generate_context!())
         .expect("launcher failed to start");
 }

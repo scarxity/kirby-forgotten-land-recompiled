@@ -58,6 +58,7 @@ const actions = {
   rebuild: () => call('start_setup', { codeOnly: true }),
   cancel: () => call('cancel_setup'),
   play: () => call('play'),
+  prepare: () => call('prepare_shaders'),
   'go-setup': () => go('setup'),
   'open-work': () => call('open_path', { which: 'work' }),
   'open-mods': () => call('open_path', { which: 'mods' }),

@@ -14,11 +14,10 @@ export function primaryAction(s) {
   if (s.game_error) return { label: 'Select game folder', act: 'pick', detail: s.game_error };
   if (s.tools_missing.length && !s.built) return { label: 'Set up', act: 'go-setup', detail: toolsMissing(s) };
   if (!s.built) return { label: 'Set up', act: 'setup', detail: s.phase === 'failed' ? s.error : '' };
-  if (s.shaders_ready === false) return { label: 'Play', act: 'play', detail: SHADERS_NOTE };
+  if (s.shaders_ready === false) return { label: 'Set up', act: 'prepare' };
   return { label: 'Play', act: 'play' };
 }
 
-export const SHADERS_NOTE = 'Play prepares the shaders first, about 15 minutes, so nothing is compiled while you play. It happens again only after an update, a graphics driver change or a mod change.';
 
 export const REBUILD_NOTE = 'The game code was built by another version of this program. Build it again to play. It takes about 7 minutes on a 16-thread PC.';
 

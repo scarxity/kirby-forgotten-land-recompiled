@@ -43,7 +43,8 @@ How to start
    Then it prepares the shaders: every shader of your game files is built once for your graphics card ("Preparing
    shaders", about 15 minutes on an 8-core laptop), so the game builds almost none while you play.
 5. Click "Play". Next time the launcher shows Play straight away. After an update of this program, a graphics driver
-   update, or when you switch a mod on or off, Play prepares the shaders again first.
+   update, or when you switch a mod on or off, the launcher shows "Set up" instead: it prepares the shaders again,
+   then Play.
 
 The first frame of an area you enter for the first time can still take a moment (a tenth of a second on the test
 laptop), and so can a few shaders the preparation can't foresee. These are kept in the cache folder, so it happens once.
