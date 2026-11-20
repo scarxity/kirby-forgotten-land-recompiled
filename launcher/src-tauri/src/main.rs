@@ -1148,6 +1148,18 @@ fn open_path(app: St, which: String) -> Result<(), String> {
     Command::new("explorer").arg(p).spawn().map(|_| ()).map_err(|e| e.to_string())
 }
 
+/// The new-issue form of this project (.github/ISSUE_TEMPLATE): it asks for the version, the GPU and the log files.
+fn new_issue_url() -> String {
+    format!("https://github.com/{}/issues/new?template=bug-or-performance.yml", update::REPO)
+}
+
+/// About's "Report a problem": the folder that holds game.log (and cache\shader_seen.txt) to attach, and the form.
+#[tauri::command]
+fn report_problem(app: St) -> Result<(), String> {
+    Command::new("explorer").arg(&app.work).spawn().map_err(|e| e.to_string())?;
+    Command::new("explorer").arg(new_issue_url()).spawn().map(|_| ()).map_err(|e| e.to_string())
+}
+
 fn main() {
     let exe_dir = std::env::current_exe().ok().and_then(|e| e.parent().map(Path::to_path_buf)).unwrap_or_default();
     let mode = Mode::detect(&exe_dir);
@@ -1180,7 +1192,7 @@ fn main() {
             }
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![status, set_game_dir, start_setup, cancel_setup, play, prepare_shaders, set_settings, set_prefs, backup_saves, set_mod, move_mod, open_path, dismiss_crash, start_update, cancel_update, check_update, set_pref])
+        .invoke_handler(tauri::generate_handler![status, set_game_dir, start_setup, cancel_setup, play, prepare_shaders, set_settings, set_prefs, backup_saves, set_mod, move_mod, open_path, report_problem, dismiss_crash, start_update, cancel_update, check_update, set_pref])
         .run(tauri::generate_context!())
         .expect("launcher failed to start");
 }
@@ -1356,6 +1368,14 @@ mod tests {
         fs::write(root.join("exefs").join("main.npdm"), npdm(PROGRAM_ID)).unwrap();
         assert_eq!(check_game(&root), Ok(()));
         fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn the_report_button_opens_this_projects_issue_form() {
+        let url = new_issue_url();
+        assert_eq!(url, "https://github.com/scarxity/kirby-forgotten-land-recompiled/issues/new?template=bug-or-performance.yml");
+        let form = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.github/ISSUE_TEMPLATE/bug-or-performance.yml");
+        assert!(form.is_file(), "the form the button names is missing: {}", form.display());
     }
 
     #[test]
