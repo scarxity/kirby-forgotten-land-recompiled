@@ -360,6 +360,34 @@ static int write_glsl(const char *dir) {
         if (!s->msl || s->attr_mask || strstr(s->msl, "gin0")) { printf("FAIL geometry input the vertex shader lacks: %s\n", s->msl ? "declared" : s->error); bad++; }
         maxwell_free(s);
     }
+    {   // (vertex, GLSL) ShaderInfo.int_reads: attribute 1 into FMUL (a float input), attribute 2 through a MOV into
+        // IADD (an integer one, as a skinned model's bone index), attribute 3 into nothing
+        uint64_t ald = 0xefd8000000000000ull | PT_GUARD | 255ull << 8 | 255ull << 39;
+        uint64_t mov = 0x5c98000000000000ull | PT_GUARD | 0xfull << 39, iadd = 0x5c10000000000000ull | PT_GUARD,
+                 fmul = 0x5c68000000000000ull | PT_GUARD;
+        const uint64_t insn[] = {ald | 0x90ull << 20 | 0, ald | 0xa0ull << 20 | 1, ald | 0xb0ull << 20 | 5,
+                                 mov | 1ull << 20 | 2, iadd | 2ull << 20 | 2ull << 8 | 3, fmul | 0ull << 20 | 0ull << 8 | 4, EXIT};
+        uint8_t buf[0x80 + 8 * 16] = {0};
+        uint32_t sph[5] = {1u | 1u << 10, 0, 0, 0, 0};  // (vertex)
+        memcpy(buf + 0x30, sph, sizeof sph);
+        buf[0x30 + 0x18] = 0xf0, buf[0x30 + 0x19] = 0xff;  // (inputs: attributes 1, 2 and 3)
+        int m = 0;
+        uint64_t prog[16];
+        for (size_t i = 0; i < sizeof insn / sizeof insn[0]; i++) {
+            if (m % 4 == 0) prog[m++] = 0;
+            prog[m++] = insn[i];
+        }
+        while (m % 4) prog[m++] = NOP;
+        memcpy(buf + 0x80, prog, (size_t)m * 8);
+        ShaderKey key = {0};
+        key.glsl = 1;
+        ShaderInfo *s = maxwell_translate(buf, 0x80 + (size_t)m * 8, STAGE_VERTEX, &key);
+        if (!s->msl || s->int_reads != 1u << 2) {
+            printf("FAIL vertex inputs read as integers: %s %llx (want 4)\n", s->msl ? "int_reads" : s->error, (unsigned long long)s->int_reads);
+            bad++;
+        }
+        maxwell_free(s);
+    }
     fclose(names);
     printf("%d cases x 3 stages written to %s, %d translation failures\n", n, dir, bad);
     return bad != 0;

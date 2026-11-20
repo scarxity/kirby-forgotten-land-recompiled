@@ -89,6 +89,7 @@ char *shader_seen_read(uint64_t *file_game);
 // whose shaders this game has, to replace the file's records with
 void shader_seen_prep_done(uint64_t game, const char *keep);
 const char *shader_prep_shipped_list(void);  // the shipped list's text
+char *shader_prep_list_read(void);  // (malloc'd) the list preparation reads: LARECOMP_SHADER_LIST's file, or the shipped one
 
 // First visits: a program / pipeline / compute program the game had to build itself (preparation didn't cover it).
 // what: "program", "pipeline", "compute"; a, b: its shaders' hashes; id: what it is (logged once per process)
@@ -108,7 +109,8 @@ typedef struct {
 // (renderer_prepare_pending). false: not built (the backend can't, or the translation failed).
 bool renderer_prepare_begin(void);
 bool renderer_prepare(const ShaderRec *r, const ShaderBlob *vs, const ShaderBlob *fs);
-int renderer_prepare_pending(void);
+int renderer_prepare_pending(void);  // records not built yet
+int renderer_prepare_added(void);    // records the backend added to the ones it was given (Vulkan: integer variants)
 // (objects.c, the game thread) the game handed program p over (nvnProgramSetShaders): its setup and the pipelines
 // recorded for it are queued for background threads (Vulkan: exec.c); returns at once
 struct NvnProgram;

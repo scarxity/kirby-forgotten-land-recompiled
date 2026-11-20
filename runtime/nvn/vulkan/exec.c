@@ -6646,23 +6646,27 @@ static CsProg *compute_program(NvnProgram *np) {
 // ================================================================== shader preparation (shader_prep.h)
 // Each record: translated here (one thread, the translator isn't re-entrant), compiled and built on the worker
 // threads (run_job), kept in the prep_* tables for the game.
+// prep_pending counts records, not jobs: a record is done when its last job (its pipeline, or its compute program) is.
+// (A program's compile job runs before its records' pipeline jobs, which wait for it.)
 typedef struct { void (*fn)(void *); void *arg; } PrepJob;
 static void prep_job_run(void *a) {
     PrepJob *j = a;
     j->fn(j->arg);
+    if (j->fn != compile_program) prep_pending--;
     free(j);
-    prep_pending--;
 }
 static void prep_job(void (*fn)(void *), void *arg) {
     PrepJob *j = malloc(sizeof *j);
     j->fn = fn, j->arg = arg;
-    prep_pending++;
+    if (fn != compile_program) prep_pending++;
     run_job(prep_job_run, j);
 }
 
 static _Atomic int prep_pipe_dups;  // records whose pipeline another record already made
+static _Atomic int prep_added;      // records added here: a plain record's integer variants (renderer_prepare)
 bool renderer_prepare_begin(void) { return g_vk.dev != VK_NULL_HANDLE; }
 int renderer_prepare_pending(void) { return prep_pending; }
+int renderer_prepare_added(void) { return prep_added; }
 static void gpl_probe(void);
 static void gpl_probe_note(Pipe *pp);
 void renderer_prepare_end(void) {
@@ -6777,6 +6781,7 @@ bool renderer_prepare(const ShaderRec *r, const ShaderBlob *vsb, const ShaderBlo
     rec_prog_keys(r, fsb->code, &vkey, &fkey);
     uint64_t ck = prog_content_key(r->vs, r->fs, &vkey, &fkey);
     bool warm = (r->flags & SR_WARM) != 0;  // (the pre-build: built for the driver's cache, then freed: prep_pipeline)
+    uint64_t int_vs = 0, int_fs = 0;        // (the pre-build's plain record: its integer variants, below)
     Prog *p = warm ? NULL : PREP_GET(prep_progs, ck);
     if (!p) {
         p = calloc(1, sizeof *p);
@@ -6793,6 +6798,7 @@ bool renderer_prepare(const ShaderRec *r, const ShaderBlob *vsb, const ShaderBlo
         if (ok) {  // (LARECOMP_SAVE_MSL: named by the profile's fragment hash, prepared programs having no addresses)
             save_glsl(p->vi->msl, p->fs_rt_hash, "pvs");
             save_glsl(p->fi->msl, p->fs_rt_hash, "pfs");
+            int_vs = p->vi->int_reads, int_fs = p->fi->int_reads;
         }
         p->code[0] = p->code[1] = 0;  // (the game files' copies are gone after this call)
         if (!warm) PREP_PUT(prep_progs, ck, p);  // (failed ones too: the game then skips them as it would its own)
@@ -6808,6 +6814,26 @@ bool renderer_prepare(const ShaderRec *r, const ShaderBlob *vsb, const ShaderBlo
     a->pp->k.prog = p;
     a->r = *r;
     prep_job(prep_pipeline, a);
+    // An integer vertex format or texture view makes another program (its input declared as an integer: ShaderKey
+    // attr_kind, tex_uint), which a first draw would compile (KFL's first stage: 55-93 ms frames for skinned models,
+    // their bone indices an 8-bit unsigned attribute). So the pre-build's plain record is also built with each slot
+    // the shaders read as integers (ShaderInfo.int_reads) unsigned, one at a time. (Its parts for the other draw
+    // states of the program are the plain ones: the pipeline cache has them. Signed formats: none in KFL's records.)
+    if (warm && r->ncolor == 1 && !r->nattrib && !r->tex_uint) {
+        for (int s = 0; s < 16; s++) {
+            if (!(int_vs >> s & 1)) continue;
+            ShaderRec v = *r;
+            v.nattrib = (uint8_t)(s + 1);
+            v.attrib[s] = 0x03;  // (an 8-bit unsigned format at offset 0 of stream 0; the slots before it unbound)
+            if (renderer_prepare(&v, vsb, fsb)) prep_added++;
+        }
+        for (int t = 0; t < 64; t++) {
+            if (!(int_fs >> t & 1)) continue;
+            ShaderRec v = *r;
+            v.tex_uint = 1ull << t;
+            if (renderer_prepare(&v, vsb, fsb)) prep_added++;
+        }
+    }
     return true;
 }
 
@@ -6815,8 +6841,9 @@ bool renderer_prepare(const ShaderRec *r, const ShaderBlob *vsb, const ShaderBlo
 // The game hands its programs over as it loads (nvnProgramSetShaders: 6,372 at a stage load, in 0.3 s), seconds
 // before their first draws, as a native game builds an asset's pipelines while it streams in. Each is set up then, on
 // background threads: translated (cache/translations.bin), its SPIR-V loaded and its modules made, and either
-//   - the pipelines this player's game built with it before, whole: every pipeline a draw builds is recorded
-//     (cache/shader_seen.txt, shader_seen.c), and each launch builds the recorded ones as their program comes; or
+//   - the pipelines recorded for it, whole: the shipped list's (runtime/nvn/shader_variants.txt, from test plays) and
+//     this player's own (every pipeline a draw builds is recorded: cache/shader_seen.txt, shader_seen.c); each launch
+//     builds the recorded ones as their program comes; or
 //   - (none recorded) its two shader parts of the graphics pipeline library, for the draw state the prepare step built
 //     them for (shader_prep.c: plain float targets, and an unsigned last target), from the pipeline cache.
 // A first draw then finds its pipeline ready, or links it from those parts (the shared fragment output part and a
@@ -6838,16 +6865,15 @@ static uint64_t *hand_seen;  // (hq_lock) the programs' hash pairs met (open add
 static size_t hand_seen_cap, hand_seen_n;
 static _Atomic uint64_t hand_n[6], hand_ns;  // handed over, distinct, recorded; programs set up, parts, pipelines
 
-static ShaderRec *hrec;  // the player's recorded pipelines, by (vs, fs)
+static ShaderRec *hrec;  // the recorded pipelines (the shipped list's and the player's), by (vs, fs)
 static size_t hrec_n;
 static int hrec_cmp(const void *a, const void *b) {
     const ShaderRec *x = a, *y = b;
     return x->vs != y->vs ? (x->vs < y->vs ? -1 : 1) : x->fs != y->fs ? (x->fs < y->fs ? -1 : 1) : 0;
 }
-static void hrec_load(void) {
-    uint64_t game;
-    char *d = shader_seen_read(&game);
-    size_t cap = 0;
+static size_t hrec_add(char *d) {  // the G records of a list's text (d is cut up)
+    static size_t cap;
+    size_t n0 = hrec_n;
     for (char *line = d, *next; line && *line; line = next) {
         next = strchr(line, '\n');
         if (next) *next++ = 0;
@@ -6858,8 +6884,14 @@ static void hrec_load(void) {
         hrec[hrec_n++] = r;
     }
     free(d);
+    return hrec_n - n0;
+}
+static void hrec_load(void) {
+    uint64_t game;
+    size_t shipped = hrec_add(shader_prep_list_read());
+    size_t own = hrec_add(shader_seen_read(&game));  // (only what the shipped list lacks: shader_seen.c)
     if (hrec_n) qsort(hrec, hrec_n, sizeof *hrec, hrec_cmp);
-    LOG("[vk] pipelines recorded in earlier plays: %zu\n", hrec_n);
+    LOG("[vk] recorded pipelines: %zu in the shipped list, %zu from earlier plays\n", shipped, own);
 }
 static const ShaderRec *hrec_find(uint64_t vs, uint64_t fs, int *n) {
     static pthread_once_t once = PTHREAD_ONCE_INIT;

@@ -2290,6 +2290,70 @@ static void push_promote(Ctx *c, Str *body) {
     for (int i = 0; i < n; i++) c->info->push_cb[i] = words[i].cb, c->info->push_off[i] = words[i].off;
 }
 
+// ShaderInfo.int_reads, from the finished GLSL: the inputs whose bits feed an integer operation. An input is loaded
+// into a register ("rN = as_u(a2[0]);", "rN = as_u(t[0]);" in a texture fetch's block); the register's next read in
+// the text, through plain moves, is a float one when it is as_f(rN), else an integer one. Text order, not control
+// flow: a wrong answer costs one unused prepared variant, or a variant built at its first draw as before.
+static bool word_at(const char *s, const char *p, const char *w, size_t n) {
+    return !strncmp(p, w, n) && (p == s || !id_char(p[-1])) && !id_char(p[n]);
+}
+static const char *line_start(const char *s, const char *p) {
+    while (p > s && p[-1] != '\n') p--;
+    while (*p == ' ') p++;
+    return p;
+}
+static bool reg_read_as_int(const char *s, const char *from, const char *reg, int depth) {
+    size_t n = strlen(reg);
+    for (const char *p = from ? strstr(from, reg) : NULL; p; p = strstr(p + 1, reg)) {
+        if (!word_at(s, p, reg, n)) continue;
+        const char *ls = line_start(s, p), *end = strchr(p, ';');
+        if (ls == p && !strncmp(p + n, " = ", 3)) {  // written: only a read of it in the same statement comes first
+            const char *q;
+            for (q = strstr(p + n, reg); q && q < end && !word_at(s, q, reg, n); q = strstr(q + 1, reg)) {}
+            if (!q || q >= end) return false;
+            p = q;
+        }
+        if (p - s >= 5 && !strncmp(p - 5, "as_f(", 5)) return false;
+        if (p[n] == ';' && p - ls > 3 && !strncmp(p - 3, " = ", 3)) {  // a plain move: the copy's reads decide
+            char dst[16];
+            size_t d = (size_t)(p - 3 - ls);
+            if (d >= sizeof dst || depth >= 4) return false;
+            memcpy(dst, ls, d), dst[d] = 0;
+            return reg_read_as_int(s, end, dst, depth + 1);
+        }
+        return true;
+    }
+    return false;
+}
+static bool load_read_as_int(const char *s, const char *at) {  // at: " = as_u(..." after the register's name
+    const char *ls = line_start(s, at);
+    char reg[16];
+    size_t n = (size_t)(at - ls);
+    if (n >= sizeof reg) return false;
+    memcpy(reg, ls, n), reg[n] = 0;
+    return reg_read_as_int(s, strchr(at, ';'), reg, 0);
+}
+static uint64_t glsl_int_reads(const char *s, int stage) {
+    uint64_t m = 0;
+    if (stage == STAGE_VERTEX) {
+        for (const char *p = strstr(s, " = as_u(a"); p; p = strstr(p + 1, " = as_u(a")) {
+            int a = atoi(p + 9);
+            if (a >= 0 && a < 32 && !(m >> a & 1) && load_read_as_int(s, p)) m |= 1ull << a;
+        }
+    } else if (stage == STAGE_FRAGMENT) {
+        for (const char *p = strstr(s, "vec4 t = "); p; p = strstr(p + 1, "vec4 t = ")) {
+            const char *call = strchr(p, ';'), *end = call ? strstr(call, "\n    }") : NULL, *q;
+            int slot = -1;
+            for (q = p + 9; call && q < call; q++)  // (the sampler: the call's first t<slot>)
+                if (*q == 't' && q[1] >= '0' && q[1] <= '9' && !id_char(q[-1])) { slot = atoi(q + 1); break; }
+            if (slot < 0 || slot > 63 || (m >> slot & 1) || !end) continue;
+            for (q = strstr(call, " = as_u(t["); q && q < end; q = strstr(q + 1, " = as_u(t["))
+                if (load_read_as_int(s, q)) { m |= 1ull << slot; break; }
+        }
+    }
+    return m;
+}
+
 static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
     ShaderInfo *info = c->info;
     const ShaderKey *key = c->key;
@@ -2595,6 +2659,7 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
     }
     sp(&s, "}\n");
     info->msl = s.buf;
+    info->int_reads = glsl_int_reads(s.buf, stage);
     info->attr_mask = c->in_attr_mask;
     info->out_mask = stage == STAGE_FRAGMENT ? c->omap_target : c->out_attr_mask;
     for (int i = 0; i < 18; i++) info->cbuf_used[i] = (info->cbuf_dynamic & (1u << i)) ? 0 : c->cbuf_need[i] * 16;
