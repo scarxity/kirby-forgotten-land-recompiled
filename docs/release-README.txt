@@ -41,9 +41,9 @@ How to start
    cores take longer. A file that takes over a minute is named under the progress bar. You can Cancel and build again
    later: the pieces already compiled are kept, so it carries on from there.
    Then it prepares the shaders: every shader of your game files is built once for your graphics card ("Preparing
-   shaders", about 7 minutes on an 8-core laptop), so the game builds almost none while you play.
-5. Click "Play". Next time the launcher shows Play straight away. After a graphics driver update, or when you switch a
-   mod on or off, Play prepares the shaders again first.
+   shaders", about 15 minutes on an 8-core laptop), so the game builds almost none while you play.
+5. Click "Play". Next time the launcher shows Play straight away. After an update of this program, a graphics driver
+   update, or when you switch a mod on or off, Play prepares the shaders again first.
 
 The first frame of an area you enter for the first time can still take a moment (a tenth of a second on the test
 laptop), and so can a few shaders the preparation can't foresee. These are kept in the cache folder, so it happens once.

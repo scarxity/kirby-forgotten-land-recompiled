@@ -4,20 +4,28 @@ Versions are tagged `vX.Y.Z`. Small fixes bump the last number; features and lar
 
 ## 0.3.3
 
-**Fewer freezes, and none from shaders on a second play.**
+**No shader freezes in our tests, even on a first visit.**
 - **Installed with RecompLauncher:** shaders were never prepared, so every new object froze the picture while it was
   built: 20 to 30 fps with freezes of up to 2.4 s in the first stage. RecompLauncher's setup now prepares them too
-  ("Preparing shaders", about 10 minutes, once).
+  ("Preparing shaders", about 15 minutes, once).
 - **Entering a new area:** the game hands over its shaders when a stage loads; they are now set up in the background
-  from that moment, not at the first frame that draws them. Each pipeline built during play is also remembered, and
-  built ahead on every later start. Measured on an RTX 3050 Laptop (Frame Generation off), first stage with its three
-  guide clips, about 9 minutes: shader pauses of 50 ms or more went from 13 (the longest 240 ms) to 12 (the longest
-  186 ms) on a first play, and to none on a second play.
+  from that moment, not at the first frame that draws them.
+- **Shaders the game files can't predict** (models whose vertex data is integer, textures read as integers) are built
+  in every possible variant during "Preparing shaders" now, and this version ships a list of shader variant records
+  recorded from test play (33 stages): one-way hashes and draw settings, never shader code. The prepare step finds the
+  shaders by those hashes in your own game files and builds them before play. Each pipeline built during play is also
+  remembered and built ahead on every later start.
+- Measured on an RTX 3050 Laptop (Frame Generation off), first stage with its three guide clips, about 9 minutes, a
+  first play: shader pauses of 50 ms or more went from 8-10 (the longest 114 ms) to 0 in 2 of 3 runs and one of 52 ms in
+  the third.
+
+"Preparing shaders" takes longer: about 15 minutes instead of 10 on that laptop, and the `cache` folder grows by about
+0.7 GB (to about 2.8 GB).
 
 Kirby runs its 3D at 30 fps, as on the original Switch: 60 fps there is the Switch 2 Edition's, a different program.
 The game's menus run at 60.
 
-Unzip over 0.3.2: the game code from 0.3.2 is used as it is; the first Play prepares the shaders again (about 8
+Unzip over 0.3.2: the game code from 0.3.2 is used as it is; the first Play prepares the shaders again (about 15
 minutes), with the pipelines your earlier plays recorded.
 
 ### Added
@@ -39,7 +47,9 @@ minutes), with the pipelines your earlier plays recorded.
 - The game's log names what each slow frame was spent on
 
 ### Known issues
-- The first visit to an area can still pause up to about 0.2 s once, for shaders the prepare step can't foresee
+- A stage's first frame takes 0.1 to 0.3 s: it uploads the stage's textures (about 110 MB) as it fades in
+- The shipped list covers 33 stages from their first step; the town, the world map, the arena's other screens and
+  Level 3's third stage aren't in it yet (their shaders are still prepared, only the rare variants may pause once)
 - The small guide video at the bottom right in the first stage was reported black on one PC, also with Frame
   Generation off; it freezes the game for 2 to 3 s when it ends there. It plays in every test run
 - Frame Generation is still experimental: in a test run it made frame pacing worse (the slowest frame of each 2 s rose
