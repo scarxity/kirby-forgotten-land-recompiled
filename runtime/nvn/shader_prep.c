@@ -744,11 +744,13 @@ static bool prep_run_locked(const char *romfs, void (*progress)(int done, int to
         }
         LOG("[shader] every program of the game files: %d, %d of them also with an integer last target; %d compute\n", ngen, nint, ncs);
     }
-    // done - pending moves both ways a little (builds finish on other threads): the count shown only goes up, and
-    // never past the total
+    // Records built: those handed over and those the backend added (a plain record's integer variants: known once it
+    // is translated, so the total grows as the run goes), less those not built yet. That moves both ways a little
+    // (builds finish on other threads): the count shown only goes up, and never past the total
     int total = nwork, shown = 0;
-#define PREP_REPORT(d) do { int d_ = (d); if (d_ > total) d_ = total; if (d_ > shown) shown = d_; \
-                            if (progress) progress(shown, total); } while (0)
+#define PREP_REPORT(d) do { total = nwork + renderer_prepare_added(); int d_ = (d); if (d_ > total) d_ = total; \
+                            if (d_ > shown) shown = d_; if (progress) progress(shown, total); } while (0)
+#define PREP_BUILT() (done + renderer_prepare_added() - renderer_prepare_pending())
     PREP_REPORT(0);
     FILE **files = calloc((size_t)idx_nfiles + 1, sizeof *files);
     int done = 0, prepared = 0, failed = 0, prepared_seen = 0;
@@ -763,16 +765,17 @@ static bool prep_run_locked(const char *romfs, void (*progress)(int done, int to
         else failed++;
         free(dv);
         free(df);
-        if ((++done & 7) == 0) PREP_REPORT(done - renderer_prepare_pending());
+        if ((++done & 7) == 0) PREP_REPORT(PREP_BUILT());
     }
     while (!(cancel && *cancel) && renderer_prepare_pending()) {  // (the last builds)
-        PREP_REPORT(done - renderer_prepare_pending());
+        PREP_REPORT(PREP_BUILT());
         struct timespec ts = {0, 5000000};
         nanosleep(&ts, NULL);
     }
     if (!(cancel && *cancel)) renderer_prepare_end();
     PREP_REPORT(total);
 #undef PREP_REPORT
+#undef PREP_BUILT
     free(work);
     free(gen);
     free(cs_gen);
@@ -788,7 +791,7 @@ static bool prep_run_locked(const char *romfs, void (*progress)(int done, int to
 static void prep_step_progress(int done, int total) {
     static int last = -1;
     int permille = total ? (int)((int64_t)done * 1000 / total) : 0;
-    if (permille == last) return;
+    if (permille <= last) return;  // (only forward: the total can grow, prep_run_locked)
     last = permille;
     if (total) printf("phase shaders %.3f %d/%d\n", permille / 1000.0, done, total);
     else printf("phase shaders 0.000 (reading the game files)\n");  // (the index: minutes on a first run)

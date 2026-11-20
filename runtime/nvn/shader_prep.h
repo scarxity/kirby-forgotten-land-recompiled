@@ -108,7 +108,8 @@ typedef struct {
 // (renderer_prepare_pending). false: not built (the backend can't, or the translation failed).
 bool renderer_prepare_begin(void);
 bool renderer_prepare(const ShaderRec *r, const ShaderBlob *vs, const ShaderBlob *fs);
-int renderer_prepare_pending(void);
+int renderer_prepare_pending(void);  // records not built yet
+int renderer_prepare_added(void);    // records the backend added to the ones it was given (Vulkan: integer variants)
 // (objects.c, the game thread) the game handed program p over (nvnProgramSetShaders): its setup and the pipelines
 // recorded for it are queued for background threads (Vulkan: exec.c); returns at once
 struct NvnProgram;
