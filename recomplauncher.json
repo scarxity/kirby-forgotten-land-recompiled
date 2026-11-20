@@ -62,7 +62,7 @@
   },
   "exit_codes": {
     "8": "No exefs and romfs were found in that folder. The exefs holds main and main.npdm, the romfs holds the folders msg and gfx. Pick the folder you extracted them into.",
-    "9": "That folder holds a game package (.nsp or .xci), not extracted files. Extract its exefs and romfs first.",
+    "9": "That is a game package (.nsp or .xci), not extracted files. Extract them first with an emulator set up with your own keys. In Ryujinx: right-click the game, Extract Data, Extract ExeFS, and pick an empty folder; then Extract Data, Extract RomFS, into the same folder. If the game's update is installed there, choose No Update first (right-click the game, Manage Title Updates). Then pick that folder.",
     "10": "Those are not the files of Kirby and the Forgotten Land 1.0.0. They are from another game, or from a version of Kirby this release does not support. Extract version 1.0.0 of the base game.",
     "11": "The game files could not be copied. Check that the disk has about 6.5 GB free (a copy to another drive needs about 6 GB; on the same drive the files are linked and take no extra space).",
     "12": "The game code did not build. The log in the game's folder says why.",
