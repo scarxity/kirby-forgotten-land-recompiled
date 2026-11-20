@@ -12,6 +12,11 @@ NO GAME FILES ARE INCLUDED, and no game code: this zip holds only tools. You nee
 (.xci, .nsp, .nsz, .nca) must be extracted first. The game's update is not used. The game code is built on your PC
 from those files, and stays there.
 
+To extract a .nsp or .xci, use an emulator you have set up with your own keys. In Ryujinx: right-click the game,
+Extract Data, Extract ExeFS, and pick an empty folder; then Extract Data, Extract RomFS, into the same folder. If the
+game's update is installed there, choose No Update first (right-click the game, Manage Title Updates). Then pick that
+folder in the launcher.
+
 What you need
 -------------
 - Windows 10 or 11, 64-bit.

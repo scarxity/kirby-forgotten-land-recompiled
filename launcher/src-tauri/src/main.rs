@@ -120,7 +120,7 @@ fn parse_setup_line(line: &str) -> Option<SetupLine> {
 fn setup_failure(reason: &str) -> String {
     match reason {
         "not_found" => "No game files were found in that folder. It needs your extracted exefs (it holds main and main.npdm) and romfs (it holds the folders msg and gfx), in it or in folders inside it.",
-        "package" => "Those are packed game files (.xci, .nsp). Extract them first (exefs and romfs).",
+        "package" => "Those are packed game files (.xci, .nsp). Extract them first with an emulator set up with your own keys. In Ryujinx: right-click the game, Extract Data, Extract ExeFS, and pick an empty folder; then Extract Data, Extract RomFS, into the same folder. If the game's update is installed there, choose No Update first (right-click the game, Manage Title Updates). Then pick that folder here.",
         "version" => "Those are not the files of Kirby and the Forgotten Land 1.0.0. They are from another game, or from a version of Kirby this release does not support. Extract version 1.0.0 of the base game.",
         "update" => "That is the game's update, not the base game. Extract the base game, version 1.0.0, without the update.",
         "copy" => "The game files could not be copied. Check the free disk space and try again.",
