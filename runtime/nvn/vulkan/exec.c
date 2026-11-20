@@ -6712,6 +6712,7 @@ static void rec_prog_keys(const ShaderRec *r, const uint8_t *fs_code, ShaderKey 
     for (int i = 0; i < r->nattrib; i++) vkey->attr_kind[i] = (uint8_t)attr_kind(r->attrib[i] & 0xFF);
     for (int i = 0; i < r->ncolor && i < 8; i++) if (r->color[i]) fkey->rt_kind[i] = (uint8_t)rt_kind(r->color[i]);
     rt_kinds_written(fkey, fs_code);
+    fkey->tex_uint = r->tex_uint, fkey->tex_sint = r->tex_sint;
 }
 
 typedef struct { Pipe *pp; ShaderRec r; } PrepPipe;
@@ -7528,6 +7529,7 @@ static void draw_(CmdRec *r, bool indexed) {
             if (shader_rec_recording() && !pr->gi && !pr->vs_only) {  // (variant records: vertex + fragment programs only)
                 ShaderRec rec;
                 rec_from_state(&rec, vkey.flip_x, mode);
+                rec.tex_uint = fkey.tex_uint, rec.tex_sint = fkey.tex_sint;  // (the program this draw found for them)
                 shader_rec_note(&rec);
             }
             pp = prep_pipes_n ? PREP_GET(prep_pipes, ph) : NULL;  // prepared before the game
@@ -7538,6 +7540,7 @@ static void draw_(CmdRec *r, bool indexed) {
                 if (prep_check_on()) {
                     ShaderRec rec;
                     rec_from_state(&rec, vkey.flip_x, mode);
+                    rec.tex_uint = fkey.tex_uint, rec.tex_sint = fkey.tex_sint;
                     prep_check(&k, vh, fh, &rec);
                 }
                 pp = calloc(1, sizeof *pp);

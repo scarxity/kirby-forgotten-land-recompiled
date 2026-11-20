@@ -44,6 +44,7 @@ typedef struct {
     uint8_t topo;            // primitive class: 0 points, 1 lines, 2 triangles
     uint8_t poly_fill;       // filled polygons (0: lines)
     uint32_t local[3];       // compute: local size
+    uint64_t tex_uint, tex_sint;  // fragment texture slots bound to unsigned / signed integer views (they change the program)
 } ShaderRec;
 
 // The record's text form (one line, no newline) and back
