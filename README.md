@@ -67,7 +67,9 @@ variant records, `runtime/nvn/shader_variants.txt`: pipeline state in NVN terms 
 plus each shader's identity as a one-way hash of its code bytes. No shader code ships in any form: the prepare step
 finds the code by that hash in the player's own game files and builds the variants on the player's PC, so a first
 visit anywhere has no shader pause. The records come from test play and from the records players' games write
-(`cache/shader_seen.txt`), merged with `tools/shader_list_merge.py`. The extracted game files, the generated C and
+(`cache/shader_seen.txt`), merged with `tools/shader_list_merge.py`. Players attach `game.log` or `shader_seen.txt` to
+their issues: a bot summarises them and labels the issue "log: new shaders", and a weekly workflow gathers the records
+into one pull request to read and merge ([docs/issue-triage.md](docs/issue-triage.md)). The extracted game files, the generated C and
 the build output go to a **work folder** outside the repository. Pass it to `make` as `WORK=`. The scripts in `tools/` default to
 `../work/kfl`.
 

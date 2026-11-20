@@ -2,7 +2,8 @@
 # The checks CI runs, in one place so a PC runs exactly what the workflow runs (make ci-test).
 #   tools/ci/run.sh build            the runtime (build/<EXE_NAME>.exe)
 #   tools/ci/run.sh engine           LAS Recomp's game-free tests, the shader translator's SPIR-V checks, the find-game test
-#   tools/ci/run.sh repo             the no-game-data guard, the upstream sync test, the generator test, tools/verify self-tests
+#   tools/ci/run.sh repo             the no-game-data guard, the upstream sync test, the generator test, the issue bot's and
+#                                    shader collector's tests, tools/verify self-tests
 # Any number of suites in one call. Every check runs even after one fails; the exit code is 1 if any failed. A check
 # that cannot run yet is listed as PENDING, one that cannot run here as SKIP. Needs no game files and no GPU.
 # Env: PY (python, default "python"), EXE (the runtime, default build/<EXE_NAME>.exe from game/game.mk).
@@ -88,6 +89,8 @@ suite_repo() {
     t no_game_data 'sh tools/ci/no_game_data.sh'
     t upstream_sync 'bash tools/upstream/test_sync.sh'
     t dyn_base '$PY tools/test_dyn_base.py'
+    t log_triage '$PY tools/test_log_triage.py'
+    t shader_collect '$PY tools/test_shader_collect.py'
     local f flag
     for f in tools/verify/*.py tools/check_game_identity.py; do
         [ -f "$f" ] || continue

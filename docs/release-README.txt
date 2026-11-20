@@ -130,6 +130,8 @@ If something goes wrong
 - A message about Vulkan or the graphics driver: update your graphics driver. The game needs Vulkan 1.3.
 - A message about AVX2: this CPU is too old for the game code.
 - The game closes within seconds: the launcher says so. Read game.log for the reason.
+- To report a problem, use "Report a problem" on the launcher's About page and attach game.log (and cache\shader_seen.txt
+  for stutter): the shaders other players meet are added to the next release, so it helps remove stutter for everyone.
 
 Legal and licences
 ------------------

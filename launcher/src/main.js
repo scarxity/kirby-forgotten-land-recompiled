@@ -88,6 +88,7 @@ const actions = {
   'open-setup-log': () => call('open_path', { which: 'setup_log' }),
   'open-game-log': () => call('open_path', { which: 'game_log' }),
   'open-crash-log': () => call('open_path', { which: 'crash_log' }),
+  'report-problem': () => call('report_problem'),
   'dismiss-crash': () => call('dismiss_crash'),
   update: () => call('start_update'),
   'cancel-update': () => call('cancel_update'),
@@ -280,6 +281,11 @@ const views = {
           <button class="btn" data-act="open-work">Open work folder</button>
           <button class="btn quiet" data-act="open-game-log">Open game log</button>
         </div>
+      </section>
+      <section class="card glass">
+        <h2>Something wrong?</h2>
+        <p>Report a problem opens the issue form in your browser and the folder that holds <code>game.log</code>. Attach <code>game.log</code> to the issue, and for stutter <code>cache\\shader_seen.txt</code> too: it helps remove stutter for everyone.</p>
+        <div class="row"><button class="btn" data-act="report-problem">Report a problem</button></div>
       </section>
       <section class="card glass update">
         <h2>Version ${esc(s.version)}</h2>

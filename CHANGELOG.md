@@ -38,6 +38,8 @@ again (about 15 minutes, with the pipelines your earlier plays recorded); then P
   game code, shaders, mods, saves and settings are never replaced. Copies installed by RecompLauncher are updated by
   RecompLauncher, so the launcher doesn't check there
 - Game tab: open the saves folder, and "Back up saves now" (the last 5 are kept in `save-backups`)
+- About: **Report a problem** opens the issue form in your browser and the folder with `game.log`. Attaching `game.log`
+  (and `cache\shader_seen.txt` for stutter) lets us add the shaders you met to the next release's list
 - "Minimise launcher while playing" (General)
 
 ### Changed

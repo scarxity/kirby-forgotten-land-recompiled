@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 
-const REPO: &str = "scarxity/kirby-forgotten-land-recompiled";
+pub const REPO: &str = "scarxity/kirby-forgotten-land-recompiled";
 const DEFAULT_API: &str = "https://api.github.com";
 /// Overrides the API's base URL, so the updater can be tried against a local server.
 const API_ENV: &str = "KFL_UPDATE_API";
