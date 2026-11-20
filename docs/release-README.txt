@@ -7,7 +7,9 @@ Project page and source code: https://github.com/scarxity/kirby-forgotten-land-r
 
 This is a work in progress. docs/STATUS.md in the repository says what has been checked and the known problems.
 
-NO GAME FILES ARE INCLUDED, and no game code: this zip holds only tools. You need your own copy of the game, version
+NO GAME FILES ARE INCLUDED, and no game code or assets: this zip holds only tools, and a list of shader
+variant records (one-way hashes and draw settings, never shader code) that the shader step uses to find and build the
+shaders in your own game files. You need your own copy of the game, version
 1.0.0, extracted to a folder that holds two folders, exefs and romfs (program id 01004D300C5AE000). Packed files
 (.xci, .nsp, .nsz, .nca) must be extracted first. The game's update is not used. The game code is built on your PC
 from those files, and stays there.

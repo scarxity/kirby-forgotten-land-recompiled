@@ -9,8 +9,9 @@ an emulator.
 
 > [!IMPORTANT]
 > **No game files are included, and none may be added.** You need your own legally obtained copy, extracted to
-> `exefs` and `romfs` folders. This project provides no game files, keys or dumping tools. It is a fan project, not
-> affiliated with Nintendo or HAL Laboratory.
+> `exefs` and `romfs` folders. This project provides no game files, keys or dumping tools. No game code, assets or
+> fonts are included. Only a list of shader variant records ships (`runtime/nvn/shader_variants.txt`), never shader
+> code. It is a fan project, not affiliated with Nintendo or HAL Laboratory.
 
 ## Status
 
@@ -61,8 +62,13 @@ from the same folder, show its settings and start it.
 | `third_party/` | Bundled libraries, each under its own license |
 | `docs/` | Status, testing, the upstream record, what the launchers expect from the runtime |
 
-Nothing derived from the game lives in this repository. The extracted game files, the generated C and the build
-output go to a **work folder** outside it. Pass it to `make` as `WORK=`. The scripts in `tools/` default to
+No game files, game code or assets live in this repository. The one thing recorded from play is the list of shader
+variant records, `runtime/nvn/shader_variants.txt`: pipeline state in NVN terms (formats, vertex layout, blend state)
+plus each shader's identity as a one-way hash of its code bytes. No shader code ships in any form: the prepare step
+finds the code by that hash in the player's own game files and builds the variants on the player's PC, so a first
+visit anywhere has no shader pause. The records come from test play and from the records players' games write
+(`cache/shader_seen.txt`), merged with `tools/shader_list_merge.py`. The extracted game files, the generated C and
+the build output go to a **work folder** outside the repository. Pass it to `make` as `WORK=`. The scripts in `tools/` default to
 `../work/kfl`.
 
 ## Build from source (Windows)
