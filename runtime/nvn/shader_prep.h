@@ -108,6 +108,10 @@ typedef struct {
 bool renderer_prepare_begin(void);
 bool renderer_prepare(const ShaderRec *r, const ShaderBlob *vs, const ShaderBlob *fs);
 int renderer_prepare_pending(void);
+// (objects.c, the game thread) the game handed program p over (nvnProgramSetShaders): its setup and the pipelines
+// recorded for it are queued for background threads (Vulkan: exec.c); returns at once
+struct NvnProgram;
+void renderer_program_handover(const struct NvnProgram *p);
 void renderer_prepare_end(void);  // all builds done (e.g. keep the pipeline cache)
 
 // Prepares every record of the shipped list (LARECOMP_SHADER_LIST=<file>: that list instead) from the game files in
