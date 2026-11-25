@@ -2991,6 +2991,13 @@ static VkResult gpl_part_make(int part, const PipeCI *c, VkPipeline *out) {
     VkGraphicsPipelineCreateInfo pi = {.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, .pNext = &li,
         .flags = VK_PIPELINE_CREATE_LIBRARY_BIT_KHR | VK_PIPELINE_CREATE_RETAIN_LINK_TIME_OPTIMIZATION_INFO_BIT_EXT,
         .pDynamicState = &c->dy, .layout = c->pi.layout};
+    // The vertex input and fragment output parts are shared by every program (their keys leave the program out), so
+    // they get no layout (allowed: they have no shaders). With the layout of the program that built them first, RADV
+    // takes that program's set layouts into every pipeline linked from them (it imports each library's layout, the
+    // first one per set wins), and a program whose uniform buffers are dynamic in other bindings reads its dynamic
+    // descriptors from the wrong slots: an image descriptor read as a uniform buffer, a GPU page fault and a lost
+    // device on the first frames that draw text (RX 9060 XT, Mesa 26.2). NVIDIA's driver ignores the layout there.
+    if (part == 0 || part == 3) pi.layout = VK_NULL_HANDLE;
     switch (part) {
     case 0: pi.pVertexInputState = c->pi.pVertexInputState; pi.pInputAssemblyState = &c->ia; break;
     case 1: pi.stageCount = 1; pi.pStages = c->stages; pi.pViewportState = &c->vs; pi.pRasterizationState = &c->rs; break;
