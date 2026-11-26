@@ -52,6 +52,7 @@ suite_engine() {
     t movie_extractor 'clang -std=gnu11 -O1 tools/test_movie_extractor.c -lavformat -lavcodec -lavutil -lswscale -o build/test-movie-extractor.exe && mkdir -p build/movie-test && build/test-movie-extractor.exe build/movie-test'
     t condvar 'clang -O2 -pthread tools/test_condvar.c -o build/test-condvar.exe && build/test-condvar.exe'
     t cmdbuf 'clang -O1 tools/test_cmdbuf.c -o build/test-cmdbuf.exe && build/test-cmdbuf.exe'
+    t tegra 'clang -std=gnu11 -O2 tools/test_tegra.c -o build/test-tegra.exe && build/test-tegra.exe'
     t rumble 'clang -std=gnu11 -O2 $(pkg-config --cflags sdl3) tools/test_rumble.c $(pkg-config --libs sdl3) -o build/test-rumble.exe && build/test-rumble.exe'
     t active_pad 'clang -std=gnu11 -O2 $(pkg-config --cflags sdl3) tools/test_active_pad.c $(pkg-config --libs sdl3) -o build/test-active-pad.exe && build/test-active-pad.exe'
     t fence_sequence 'python tools/test_fence_sequence.py'

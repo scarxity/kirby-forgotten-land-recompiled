@@ -118,9 +118,45 @@ static void copy_surface(const uint8_t *src, uint8_t *dst, uint32_t wb, uint32_t
     }
 }
 
+// A GOB is 8 rows of 64 bytes, each row four 16-byte pieces at fixed offsets in it (gob_offset's within-GOB part: row
+// r, piece p at ((r >> 1) << 6) | ((r & 1) << 4) | (p & 1) << 5 | (p >> 1) << 8), so a whole GOB column is read from its
+// 512 contiguous bytes and written as 8 rows of 64: what is the same for the whole GOB is worked out once, and the
+// copies are constant-size. (Row by row, the same GOB column of a row sits one block apart, a multiple of the cache's
+// 4 KB set period: every piece evicted the one before it.) Only the partial column at the right edge (a row not a
+// multiple of 64 bytes) goes piece by piece.
 void tegra_deswizzle(const uint8_t *src, uint8_t *dst, uint32_t wb, uint32_t hb, uint32_t d, uint32_t bpb,
                      uint32_t bh_log2, uint32_t bd_log2) {
-    copy_surface(src, dst, wb, hb, d, bpb, bh_log2, bd_log2, true);
+    uint32_t row_bytes = wb * bpb;
+    uint32_t width_gobs = (row_bytes + 63) / 64, full_gobs = row_bytes / 64;
+    uint32_t gob_rows = 8u << bh_log2;
+    uint64_t blocks_rows = (hb + gob_rows - 1) / gob_rows;
+    uint64_t block_size = 512ull << (bh_log2 + bd_log2);
+    for (uint32_t z = 0; z < d; z++) {
+        uint64_t z_base = (uint64_t)(z >> bd_log2) * blocks_rows, z_in_block = z & ((1u << bd_log2) - 1);
+        for (uint32_t y0 = 0; y0 < hb; y0 += 8) {
+            uint32_t gob_y = y0 >> 3, rows = hb - y0 < 8 ? hb - y0 : 8;
+            const uint8_t *g = src + ((z_base + (gob_y >> bh_log2)) * width_gobs * block_size) +
+                               ((z_in_block << bh_log2 | (gob_y & ((1u << bh_log2) - 1))) * 512);
+            uint8_t *lin = dst + ((uint64_t)z * hb + y0) * row_bytes;
+            for (uint32_t gx = 0; gx < full_gobs; gx++, g += block_size, lin += 64) {
+                for (uint32_t r = 0; r < rows; r++) {
+                    const uint8_t *p = g + ((r >> 1) << 6) + ((r & 1) << 4);
+                    uint8_t *o = lin + (uint64_t)r * row_bytes;
+                    memcpy(o, p, 16);
+                    memcpy(o + 16, p + 32, 16);
+                    memcpy(o + 32, p + 256, 16);
+                    memcpy(o + 48, p + 288, 16);
+                }
+            }
+            if (full_gobs * 64 < row_bytes)
+                for (uint32_t r = 0; r < rows; r++)
+                    for (uint32_t x = full_gobs * 64; x < row_bytes; x += 16) {
+                        uint32_t n = row_bytes - x < 16 ? row_bytes - x : 16;
+                        memcpy(dst + ((uint64_t)z * hb + y0 + r) * row_bytes + x,
+                               src + gob_offset(x, y0 + r, z, width_gobs, bh_log2, bd_log2, blocks_rows), n);
+                    }
+        }
+    }
 }
 
 void tegra_swizzle(const uint8_t *src, uint8_t *dst, uint32_t wb, uint32_t hb, uint32_t d, uint32_t bpb,
