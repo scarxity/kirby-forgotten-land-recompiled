@@ -6,9 +6,14 @@
 #                                    shader collector's tests, tools/verify self-tests
 # Any number of suites in one call. Every check runs even after one fails; the exit code is 1 if any failed. A check
 # that cannot run yet is listed as PENDING, one that cannot run here as SKIP. Needs no game files and no GPU.
-# Env: PY (python, default "python"), EXE (the runtime, default build/<EXE_NAME>.exe from game/game.mk).
+# Env: PY (python, default "python"), EXE (the runtime, default build/<EXE_NAME>.exe from game/game.mk), MAKEARGS (more
+# arguments for the runtime's make). On Linux (the container of tools/linux/Containerfile; the workflow's linux job) the
+# tests of the Windows code and the ones that need glslc or spirv-val are listed as SKIP; EXE and MAKEARGS name the build
+# (build/linux/x86_64/game/ForgottenLandRecomp, B= DEPS= SHADERC=...), CPATH, LIBRARY_PATH, LD_LIBRARY_PATH and
+# PKG_CONFIG_PATH the dependencies' folders.
 cd "$(dirname "$0")/../.." || exit 2
 PY=${PY:-python}
+[ "$(uname -s)" = Linux ] && LINUX=1 || LINUX=
 EXE=${EXE:-build/$(sed -n 's/^EXE_NAME *:= *//p' game/game.mk).exe}
 mkdir -p build
 passed=0 failed=0 other=0 summary=""
@@ -39,42 +44,49 @@ note() {  # note <PENDING|SKIP> <name> <why>
 }
 
 suite_build() {
-    t "runtime build" 'make -j"$(nproc)" "$EXE"'
+    t "runtime build" 'make -j"$(nproc)" $MAKEARGS "$EXE"'
 }
 
 suite_engine() {
-    t build_cache 'python tools/test_build_cache.py'
+    t build_cache '$PY tools/test_build_cache.py'
     # (miniz first: the test would fetch it with the first bash on PATH, WSL's on a hosted runner)
-    t gamebuild_resume 'bash tools/fetch_miniz.sh && python tools/test_gamebuild_resume.py'
-    t windows_processes 'python tools/test_windows_processes.py'
-    t delete_guard 'python tools/test_delete_guard.py'
-    t data_move 'python tools/test_data_move.py'
-    t movie_extractor 'clang -std=gnu11 -O1 tools/test_movie_extractor.c -lavformat -lavcodec -lavutil -lswscale -o build/test-movie-extractor.exe && mkdir -p build/movie-test && build/test-movie-extractor.exe build/movie-test'
+    t gamebuild_resume 'bash tools/fetch_miniz.sh && $PY tools/test_gamebuild_resume.py'
+    if [ "$LINUX" ]; then note SKIP windows_processes "the Windows process code"; else
+    t windows_processes '$PY tools/test_windows_processes.py'; fi
+    t delete_guard '$PY tools/test_delete_guard.py'
+    t data_move '$PY tools/test_data_move.py'
+    if [ "$LINUX" ]; then note SKIP movie_extractor "reads a WAV file, which the game's minimal FFmpeg (tools/linux/build_deps.sh) has no demuxer for; MSYS2's full one does"; else
+    t movie_extractor 'clang -std=gnu11 -O1 tools/test_movie_extractor.c -lavformat -lavcodec -lavutil -lswscale -o build/test-movie-extractor.exe && rm -rf build/movie-test && mkdir -p build/movie-test && build/test-movie-extractor.exe build/movie-test'; fi
     t condvar 'clang -O2 -pthread tools/test_condvar.c -o build/test-condvar.exe && build/test-condvar.exe'
     t cmdbuf 'clang -O1 tools/test_cmdbuf.c -o build/test-cmdbuf.exe && build/test-cmdbuf.exe'
     t tegra 'clang -std=gnu11 -O2 tools/test_tegra.c -o build/test-tegra.exe && build/test-tegra.exe'
     t rumble 'clang -std=gnu11 -O2 $(pkg-config --cflags sdl3) tools/test_rumble.c $(pkg-config --libs sdl3) -o build/test-rumble.exe && build/test-rumble.exe'
     t active_pad 'clang -std=gnu11 -O2 $(pkg-config --cflags sdl3) tools/test_active_pad.c $(pkg-config --libs sdl3) -o build/test-active-pad.exe && build/test-active-pad.exe'
-    t fence_sequence 'python tools/test_fence_sequence.py'
-    t gmem_lowmem 'python tools/test_gmem_lowmem.py'
-    t vulkan_validation 'python tools/test_vulkan_validation.py'
-    t vulkan_overlay 'python tools/test_vulkan_overlay.py'
-    t vulkan_sync_errors 'python tools/test_vulkan_sync_errors.py'
-    t thread_stack 'clang -std=gnu11 -O1 tools/test_windows_thread_stack.c -lpsapi -o build/test-thread-stack.exe && build/test-thread-stack.exe'
-    t lazy_commit 'clang -std=gnu11 -O1 -D_FILE_OFFSET_BITS=64 -D_POSIX_THREAD_SAFE_FUNCTIONS -DWIN32_LEAN_AND_MEAN -DNOMINMAX tools/test_windows_lazy_commit.c -lwinmm -lole32 -lshell32 -o build/test-lazy-commit.exe && build/test-lazy-commit.exe'
-    t windows_logs 'python tools/test_windows_logs.py'
-    t simd_rounding 'clang -std=gnu11 -O1 -mfma -pthread tools/test_simd_rounding.c -o build/test-simd-rounding.exe && build/test-simd-rounding.exe'
-    t settings 'python tools/test_settings.py'
-    t pace 'python tools/test_pace.py'
+    t fence_sequence '$PY tools/test_fence_sequence.py'
+    t gmem_lowmem '$PY tools/test_gmem_lowmem.py'
+    t vulkan_validation '$PY tools/test_vulkan_validation.py'
+    t vulkan_overlay '$PY tools/test_vulkan_overlay.py'
+    t vulkan_sync_errors '$PY tools/test_vulkan_sync_errors.py'
+    if [ "$LINUX" ]; then note SKIP thread_stack "the Windows thread stack code"; else
+    t thread_stack 'clang -std=gnu11 -O1 tools/test_windows_thread_stack.c -lpsapi -o build/test-thread-stack.exe && build/test-thread-stack.exe'; fi
+    if [ "$LINUX" ]; then note SKIP lazy_commit "the Windows lazy commit code"; else
+    t lazy_commit 'clang -std=gnu11 -O1 -D_FILE_OFFSET_BITS=64 -D_POSIX_THREAD_SAFE_FUNCTIONS -DWIN32_LEAN_AND_MEAN -DNOMINMAX tools/test_windows_lazy_commit.c -lwinmm -lole32 -lshell32 -o build/test-lazy-commit.exe && build/test-lazy-commit.exe'; fi
+    if [ "$LINUX" ]; then note SKIP windows_logs "the Windows session log"; else
+    t windows_logs '$PY tools/test_windows_logs.py'; fi
+    t simd_rounding 'clang -std=gnu11 -O1 -mfma -pthread tools/test_simd_rounding.c -lm -o build/test-simd-rounding.exe && build/test-simd-rounding.exe'
+    t settings '$PY tools/test_settings.py'
+    t pace '$PY tools/test_pace.py'
     t led 'clang -std=gnu11 -O1 tools/test_led.c -lm -o build/test-led.exe && build/test-led.exe'
-    t audio_fx 'clang -O2 tools/test_audio_fx.c -o build/test-audio-fx.exe && build/test-audio-fx.exe'
+    t audio_fx 'clang -O2 tools/test_audio_fx.c -lm -o build/test-audio-fx.exe && build/test-audio-fx.exe'
     t crash_explain 'clang -std=gnu11 -O1 tools/test_crash_explain.c -o build/test-crash-explain.exe && build/test-crash-explain.exe'
     t mods 'clang -std=gnu11 -O1 tools/test_mods.c runtime/mods.c -o build/test-mods.exe && build/test-mods.exe'
     t shader_stamp 'clang -std=gnu11 -O1 tools/test_shader_stamp.c runtime/shader_stamp.c -o build/test-shader-stamp.exe && build/test-shader-stamp.exe'
     # (GLSL only: the script's MSL comparison needs a reference commit; REF=HEAD satisfies it, the GLSL half is the check)
-    t translate_glsl 'REF=HEAD tools/test_translate.sh 4000 "$(nproc)" glsl'
+    if [ "$LINUX" ]; then note SKIP translate_glsl "needs SPIRV-Tools' library and glslc, which the Linux image lacks (the Windows job runs it)"; else
+    t translate_glsl 'REF=HEAD tools/test_translate.sh 4000 "$(nproc)" glsl'; fi
     t translate_ops 'tools/test_translate_ops.sh'
-    t spirv_val 'tools/test_spirv_val.sh'
+    if [ "$LINUX" ]; then note SKIP spirv_val "needs glslc and spirv-val, which the Linux image lacks (the Windows job runs it)"; else
+    t spirv_val 'tools/test_spirv_val.sh'; fi
     note SKIP translate_flow "uses setenv, which the Windows toolchain lacks (LAS runs it on Linux and macOS)"
     note SKIP dynres "uses setenv (LAS runs it on Linux and macOS)"
     note SKIP update_tags "checks LAS Recomp's release tags and build numbers, not ours"
