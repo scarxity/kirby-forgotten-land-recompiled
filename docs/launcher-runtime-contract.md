@@ -159,11 +159,12 @@ adds the environment below). `--play` goes straight to the game, never the LAS s
 
 **The game prepares its own shaders.** Before it boots, `--play` makes the `--shaders-status` check. When the stamp does
 not match (a new release or runtime, a game code rebuild, a new shipped list, a mod switched, a GPU driver update, or
-never prepared), the game opens its window with a progress bar ("Preparing shaders", with Skip) over the title picture,
+never prepared), the game opens its window with a progress bar ("Preparing shaders", no Skip) over the title picture,
 prepares every shader of the game files (`[shader] preparing: N%` lines in the log, every 5%), writes the stamp, and
 boots in that same window. So a play started by RecompLauncher's start command, a shortcut or the launcher never plays with
 unprepared shaders; the launcher's and `--prepare`'s own "Preparing shaders" step only makes it happen earlier, in
-their window. Skip leaves the stamp unwritten, so the next start asks again. Not run: a test run (`LARECOMP_NO_LAUNCHER`
+their window. It can't be skipped, so every player plays with every shader prepared; closing the window quits with
+the stamp unwritten, so the next start prepares again. Not run: a test run (`LARECOMP_NO_LAUNCHER`
 or `LARECOMP_INPUT` set), and the preparation run itself (`LARECOMP_SHADER_PREP=1`, the hidden child of the Tauri
 launcher and of `--prepare`).
 

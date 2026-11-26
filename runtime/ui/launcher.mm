@@ -532,10 +532,10 @@ static void build_progress(double f, const char *step) {
     static const char *last;
     if (step != last) last = step, set_job(step);
 }
-// Shader preparation, after the game files are ready (runtime/nvn/shader_prep.h): its own bar, and Skip
+// Shader preparation, after the game files are ready (runtime/nvn/shader_prep.h): its own bar, with no Skip, so every
+// player plays with every shader prepared (owner, 2026-11-26)
 static std::atomic<float> g_prep_frac{-1};  // -1: not preparing
-static volatile int g_prep_skip;
-static bool g_prep_skip_ask;  // Skip pressed: "are you sure?" in front of the bar (LARECOMP_LAUNCHER_SHOT=<f>:skipask)
+static volatile int g_prep_skip;  // (stop_background_prep only: the game files are about to change)
 // The variants prepared and their total (done << 32 | total), one value so the bar and the count always agree
 static std::atomic<uint64_t> g_prep_count{0};
 static void prep_progress(int done, int total) {
@@ -1628,7 +1628,7 @@ static void busy_button(ImDrawList *dl, ImVec2 a, ImVec2 b, const char *label, f
 }
 
 // The progress overlay in front of the start screen (input waits): the setup, an update's build, or the shader
-// preparation (with Skip) - the setup's, or the background one when PLAY was pressed before it finished
+// preparation - the setup's, or the background one when PLAY was pressed before it finished
 static void draw_busy_overlay(ImVec2 ds, const std::string &job, bool test_busy, bool prep_wait = false) {
     float sc = ds.y / 1080.0f;
     ImDrawList *fg = ImGui::GetForegroundDrawList();
@@ -1670,7 +1670,7 @@ static void draw_busy_overlay(ImVec2 ds, const std::string &job, bool test_busy,
         if (cut) snprintf(line, sizeof line, "%s...%s", head.c_str(), pct.c_str());
     }
     float ph = bar_y + 24 * sc + 26 * sc + line_h + (nnotes ? 14 * sc + nnotes * line_h : 0) + 40 * sc +
-               (preparing || recompiling ? line_h + 28 * sc : 0);  // (Skip / Cancel)
+               (recompiling ? line_h + 28 * sc : 0);  // (Cancel)
     ImVec2 a(o.x + (ds.x - pw) * 0.5f, o.y + (ds.y - ph) * 0.5f), b(a.x + pw, a.y + ph);
     // (in the menus' look: the panel, a pill bar, pill buttons - user 2026-11-11)
     const PlasticTheme &pt = plastic_theme();
@@ -1702,7 +1702,7 @@ static void draw_busy_overlay(ImVec2 ds, const std::string &job, bool test_busy,
         fg->AddText(g_font_small, sfs, ImVec2((a.x + b.x - ns.x) * 0.5f, bb.y + 26 * sc + (i + 1) * line_h + 14 * sc),
                     pt.text_dim, notes[i]);
     }
-    if (recompiling) {  // Shader preparation has its own Skip action; cancellation only stops the game-code build.
+    if (recompiling) {  // (cancellation only stops the game-code build; the shader preparation can't be skipped)
         ImVec2 ca((a.x + b.x) * 0.5f - 150 * sc, b.y - 40 * sc - line_h - 10 * sc), cb(ca.x + 300 * sc, ca.y + line_h + 16 * sc);
         bool hover = !g_cancel_build && ImGui::IsMouseHoveringRect(ca, cb, false);
         const char *cancel = g_cancel_build ? L("Cancelling...") : L("Cancel");  // (B / Circle and Esc too)
@@ -1710,43 +1710,6 @@ static void draw_busy_overlay(ImVec2 ds, const std::string &job, bool test_busy,
         if ((hover && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) ||
             ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) || ImGui::IsKeyPressed(ImGuiKey_Escape, false))
             g_cancel_build = true;
-    }
-    if (preparing) {  // Skip: the game then compiles what it needs as it goes (back / Esc too)
-        const char *sk = g_prep_skip ? L("Skipping...") : L("Skip");
-        ImVec2 ks = g_font_small->CalcTextSizeA(sfs, FLT_MAX, 0, sk);
-        ImVec2 ka((a.x + b.x - ks.x) * 0.5f - 22 * sc, b.y - 40 * sc - line_h - 10 * sc);
-        ImVec2 kb(ka.x + ks.x + 44 * sc, ka.y + line_h + 16 * sc);
-        bool hover = !g_prep_skip && !g_prep_skip_ask && ImGui::IsMouseHoveringRect(ka, kb, false);
-        busy_button(fg, ka, kb, sk, sfs, hover, sc);
-        if (!g_prep_skip && !g_prep_skip_ask &&
-            ((hover && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) ||
-             ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) || ImGui::IsKeyPressed(ImGuiKey_Escape, false)))
-            g_prep_skip_ask = true;
-    }
-    if (preparing && g_prep_skip_ask && !g_prep_skip) {  // what Skip means, before it happens
-        const char *q = L("Shaders will compile while you play instead, so expect some pop-in.");
-        const char *yes = L("Yes, skip"), *no = L("No, wait");
-        ImVec2 qs = g_font_small->CalcTextSizeA(sfs, FLT_MAX, 0, q);
-        ImVec2 ys = g_font_small->CalcTextSizeA(sfs, FLT_MAX, 0, yes), ns = g_font_small->CalcTextSizeA(sfs, FLT_MAX, 0, no);
-        float bw = fmaxf(ys.x, ns.x) + 64 * sc, bh = line_h + 20 * sc, gap = 24 * sc;
-        float qw = fminf(fmaxf(qs.x, 2 * bw + gap) + 96 * sc, ds.x - 32 * sc), qh = 40 * sc + line_h + 32 * sc + bh + 36 * sc;
-        fg->AddRectFilled(a, b, IM_COL32(0, 0, 0, 120), 14 * sc);  // (the bar behind it dimmed)
-        ImVec2 qa(o.x + (ds.x - qw) * 0.5f, o.y + (ds.y - qh) * 0.5f), qb(qa.x + qw, qa.y + qh);
-        plastic_panel(fg, qa, qb, sc);
-        fg->AddText(g_font_small, sfs, ImVec2((qa.x + qb.x - qs.x) * 0.5f, qa.y + 40 * sc), pt.text, q);
-        float by = qb.y - 36 * sc - bh, bx = (qa.x + qb.x) * 0.5f;
-        ImVec2 ya(bx - gap * 0.5f - bw, by), yb(bx - gap * 0.5f, by + bh), na(bx + gap * 0.5f, by), nb(bx + gap * 0.5f + bw, by + bh);
-        bool hy = ImGui::IsMouseHoveringRect(ya, yb, false), hn = ImGui::IsMouseHoveringRect(na, nb, false);
-        busy_button(fg, ya, yb, yes, sfs, hy, sc);
-        busy_button(fg, na, nb, no, sfs, !hy, sc);  // (waiting: the default, lit unless Yes is under the mouse)
-        bool click = ImGui::IsMouseClicked(ImGuiMouseButton_Left);
-        // A / Enter: the highlighted default (wait); B / Esc: also wait; Yes only by clicking it or Y / Space
-        if ((hy && click) || ImGui::IsKeyPressed(ImGuiKey_GamepadFaceUp, false) || ImGui::IsKeyPressed(ImGuiKey_Space, false))
-            g_prep_skip = 1, g_prep_skip_ask = false;
-        else if ((hn && click) || ImGui::IsKeyPressed(ImGuiKey_GamepadFaceDown, false) ||
-                 ImGui::IsKeyPressed(ImGuiKey_Enter, false) || ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) ||
-                 ImGui::IsKeyPressed(ImGuiKey_Escape, false))
-            g_prep_skip_ask = false;
     }
 }
 
@@ -2204,7 +2167,7 @@ extern "C" void launcher_run(const char *root) {
     Page page = status.empty() ? MAIN : SETUP;
     bool play = false;
     // LARECOMP_LAUNCHER_SHOT=<frame>[:<page>] (test): save build/launcher.png at that frame and exit; page:
-    // settings[:<tab>] / askdelete / setup / extracting / preparing / skipask / recompiling / tip / aspect / notice
+    // settings[:<tab>] / askdelete / setup / extracting / preparing / recompiling / tip / aspect / notice
     long shot_at = getenv("LARECOMP_LAUNCHER_SHOT") ? atol(getenv("LARECOMP_LAUNCHER_SHOT")) : 0, frame = 0;
     if (shot_at) {
 #ifdef __APPLE__
@@ -2215,7 +2178,6 @@ extern "C" void launcher_run(const char *root) {
         if (pg && !strcmp(pg + 1, "setup")) page = SETUP;
         if (pg && !strcmp(pg + 1, "ios")) page = IOS;
         if (pg && !strcmp(pg + 1, "preparing")) page = SETUP, prep_progress(666, 1585), set_job(LN("Preparing shaders"));
-        if (pg && !strcmp(pg + 1, "skipask")) page = SETUP, prep_progress(666, 1585), set_job(LN("Preparing shaders")), g_prep_skip_ask = true;
         if (pg && !strncmp(pg + 1, "fail", 4)) page = SETUP, set_failure(atoi(pg + 5));  // (the failure messages)
         if (pg && !strncmp(pg + 1, "settings", 8) && pg[9] == ':') g_tab_request_ext = atoi(pg + 10);  // settings:<tab>
         if (pg && !strcmp(pg + 1, "delete")) page = SETUP, g_confirm_delete = true;
@@ -2306,13 +2268,12 @@ extern "C" void launcher_run(const char *root) {
 #endif
     }
     // the shader preparation of every later start: in the background (first setups and updates do theirs above)
-    // (test :preparing / :skipask: no background preparation - finishing, it took the test's bar away)
+    // (test :preparing: no background preparation - finishing, it took the test's bar away)
     const char *shot_pg = getenv("LARECOMP_LAUNCHER_SHOT");
-    bool prep_shot = shot_pg && (strstr(shot_pg, ":preparing") || strstr(shot_pg, ":skipask") ||
-                                 strstr(shot_pg, ":recompiling"));
+    bool prep_shot = shot_pg && (strstr(shot_pg, ":preparing") || strstr(shot_pg, ":recompiling"));
     if (status.empty() && !g_busy && !getenv("LARECOMP_LAUNCHER_PREPARE") && !prep_shot) start_background_prep();
-    // (test) LARECOMP_LAUNCHER_PLAY_AT=<s>: PLAY that many seconds in; LARECOMP_LAUNCHER_SKIP_AT=<s>: Skip then
-    const char *play_at_env = getenv("LARECOMP_LAUNCHER_PLAY_AT"), *skip_at_env = getenv("LARECOMP_LAUNCHER_SKIP_AT");
+    // (test) LARECOMP_LAUNCHER_PLAY_AT=<s>: PLAY that many seconds in
+    const char *play_at_env = getenv("LARECOMP_LAUNCHER_PLAY_AT");
     uint64_t loop_t0 = SDL_GetTicks(), last_frame = loop_t0, bg_gap = 0, bg_frames = 0;
     bool bg_logged = false;
     for (;;) {
@@ -2325,15 +2286,14 @@ extern "C" void launcher_run(const char *root) {
         }
         last_frame = now;
         if (play_at_env && status.empty() && now - loop_t0 >= (uint64_t)(atof(play_at_env) * 1000)) play = true, play_at_env = NULL;
-        if (skip_at_env && g_prep_wait && now - loop_t0 >= (uint64_t)(atof(skip_at_env) * 1000)) g_prep_skip = 1, skip_at_env = NULL;
-        // PLAY while that still runs: its bar (with Skip) until it's done
+        // PLAY while that still runs: its bar until it's done
         if (play && g_bg_prep) {
             play = false, g_prep_wait = true;
             fprintf(stderr, "[launcher] PLAY: waiting for the shader preparation\n");
         }
         if (g_prep_wait && !g_bg_prep) {
             g_prep_wait = false, play = true;
-            fprintf(stderr, "[launcher] shader preparation %s: playing\n", g_prep_skip ? "skipped" : "done");
+            fprintf(stderr, "[launcher] shader preparation done: playing\n");
         }
         if (play) break;
         menu_apply_window_requests(win);  // (the Video tab's Fullscreen)
@@ -2885,7 +2845,6 @@ extern "C" void launcher_run(const char *root) {
                 }
                 static bool test_busy = getenv("LARECOMP_LAUNCHER_SHOT") && (strstr(getenv("LARECOMP_LAUNCHER_SHOT"), ":extracting") ||
                                                                          strstr(getenv("LARECOMP_LAUNCHER_SHOT"), ":preparing") ||
-                                                                         strstr(getenv("LARECOMP_LAUNCHER_SHOT"), ":skipask") ||
                                                                          strstr(getenv("LARECOMP_LAUNCHER_SHOT"), ":recompiling"));
                 if (busy || test_busy) draw_busy_overlay(ds, job, test_busy);  // (everything dimmed, a bar in front)
 
@@ -3073,9 +3032,9 @@ extern "C" void launcher_run(const char *root) {
 
 #ifndef __APPLE__
 // --play with the shaders not prepared for this exact runtime, game code, GPU driver, list and mods (runtime/main.c,
-// runtime/shader_stamp.h): a window with the same bar (and Skip) the setup shows, over the title movie's still, while
-// every program of the game files is prepared, then back to main(), which boots the game in this window. Skip leaves the
-// shaders unprepared (no stamp), so the next start asks again. The log has the progress, every 5%.
+// runtime/shader_stamp.h): a window with the same bar the setup shows, over the title movie's still, while every program
+// of the game files is prepared, then back to main(), which boots the game in this window. There is no Skip; closing the
+// window quits without a stamp, so the next start prepares again. The log has the progress, every 5%.
 extern "C" bool launcher_prepare_run(const char *root) {
     g_root = root;
     if (!check_game_files(g_root).empty()) return false;  // (not set up: the boot says what is missing)
@@ -3146,13 +3105,13 @@ extern "C" bool launcher_prepare_run(const char *root) {
         if (take) exit(0);
     }
     shader_prep_set_full(false);  // (a later start screen's background preparation is the quick one)
-    fprintf(stderr, "[launcher] shader preparation %s: starting the game\n", g_prep_skip ? "skipped" : "done");
+    fprintf(stderr, "[launcher] shader preparation done: starting the game\n");
     vk_imgui_backend_shutdown();
     ImGui_ImplSDL3_Shutdown();
     ImGui::DestroyContext(ctx);
     ImGui::SetCurrentContext(prev_ctx);
     g_bg = 0;
-    return !g_prep_skip;
+    return true;
 }
 #else
 extern "C" bool launcher_prepare_run(const char *) { return false; }
