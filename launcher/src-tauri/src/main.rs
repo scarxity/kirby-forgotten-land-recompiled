@@ -33,8 +33,9 @@ const CODE_BYTES: u64 = 1_000_000_000;
 const MAX_WORK_PATH: usize = 200;
 /// A game that ends sooner than this after it started did not get anywhere: the launcher says so.
 const EARLY_EXIT: Duration = Duration::from_secs(15);
-/// What the shaders were last prepared for (shader_stamp), in the work folder
-const SHADER_STAMP: &str = "shaders-prepared.txt";
+/// What the runtime writes when every shader is prepared (runtime/shader_stamp.h SHADER_STAMP_FILE). Only its time is
+/// read here, to know when to ask the runtime again (`--shaders-status`): the rule is the runtime's alone.
+const SHADER_STAMP: &str = "cache/shaders-prepared.txt";
 /// The launcher in the release zip (tools/dist.mk), what an update starts again.
 const LAUNCHER_EXE: &str = "ForgottenLandLauncher.exe";
 
@@ -162,6 +163,11 @@ enum Code {
     Ready,
 }
 
+/// The runtime's `--shaders-status`: `ready`, or `prepare <what changed>`. Anything else is not ready.
+fn parse_shaders_status(stdout: &str) -> bool {
+    stdout.lines().map(str::trim).any(|l| l == "ready")
+}
+
 fn parse_status(stdout: &str) -> Code {
     match stdout.lines().map(str::trim).find(|l| matches!(*l, "ready" | "build" | "none")) {
         Some("ready") => Code::Ready,
@@ -227,6 +233,8 @@ struct App {
     pick_error: Mutex<String>,
     /// The runtime's verdict, with the times of the files it was made from.
     code: Mutex<Option<([Option<SystemTime>; 5], Code)>>,
+    /// The runtime's verdict on the shaders (`--shaders-status`), with the times it was asked at.
+    shaders: Mutex<Option<([Option<SystemTime>; 7], bool)>>,
     updater: update::Updater,
     /// RecompLauncher installed this copy and updates it itself: this launcher neither checks nor installs updates.
     managed: bool,
@@ -253,7 +261,7 @@ struct Status {
     mods: Vec<ModEntry>,
     crash: Option<Crash>,
     packaged: bool,
-    /// Play prepares the shaders first (shader_stamp)
+    /// Play prepares the shaders first (the runtime's `--shaders-status`)
     shaders_ready: bool,
     update: update::Update,
     /// RecompLauncher updates this copy (see App::managed)
@@ -496,8 +504,26 @@ impl App {
     fn built(&self) -> bool {
         self.code() == Code::Ready
     }
+    /// Whether the shaders are prepared for this runtime, game code, shipped list, mods and GPU driver: the runtime
+    /// decides (`--shaders-status`, the check `--play` makes too), so the two cannot disagree. It loads the GPU driver,
+    /// so the answer is kept until a file it reads changes (the runtime, the game code, the stamp, the mods).
     fn shaders_ready(&self) -> bool {
-        fs::read_to_string(self.work.join(SHADER_STAMP)).is_ok_and(|s| s == shader_stamp(self))
+        let id = PathBuf::from(format!("{}.id", self.lib().display()));
+        let mods = self.mods_dir();
+        let times = [self.exe(), self.lib(), id, self.work.join(SHADER_STAMP), mods.clone(), mods.join("mods.txt"), self.game().join("romfs")]
+            .map(|p| fs::metadata(p).and_then(|m| m.modified()).ok());
+        let mut cache = self.shaders.lock().unwrap();
+        if let Some((seen, ready)) = &*cache {
+            if *seen == times {
+                return *ready;
+            }
+        }
+        let mut c = self.runtime();
+        c.arg("--shaders-status").env("LARECOMP_GAME_LIB", self.lib()).stderr(Stdio::null());
+        hide_window(&mut c);
+        let ready = c.output().is_ok_and(|o| parse_shaders_status(&String::from_utf8_lossy(&o.stdout)));
+        *cache = Some((times, ready));
+        ready
     }
     /// The game files the player picked: the junction in developer mode, the remembered folder in packaged mode (or,
     /// once that is forgotten, the install folder's own copy).
@@ -922,33 +948,8 @@ fn start_game(app: &App, game: &mut Option<(Child, Instant)>) -> Result<(), Stri
     Ok(())
 }
 
-/// What the prepared shaders were made for: the runtime (its shader translator), the display drivers (each compiles
-/// its own) and the mods switched on (they can replace shaders). Another one prepares them again before play.
-fn shader_stamp(app: &App) -> String {
-    let exe = fs::metadata(app.exe()).ok().map(|m| (m.len(), m.modified().ok()));
-    let mods: Vec<String> = read_mods(&app.mods_dir()).into_iter().filter(|m| m.on).map(|m| m.name).collect();
-    format!("runtime {exe:?}\ndrivers {}\nmods {}\n", display_drivers(), mods.join("/"))
-}
-
-/// The display adapters' driver versions (read once per launcher start)
-#[cfg(windows)]
-fn display_drivers() -> String {
-    static SEEN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    SEEN.get_or_init(|| {
-        let mut c = Command::new("reg");
-        c.args(["query", r"HKLM\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}", "/s", "/v", "DriverVersion"]);
-        hide_window(&mut c);
-        let out = c.output().map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
-        out.lines().filter(|l| l.contains("DriverVersion")).filter_map(|l| l.split_whitespace().last()).collect::<Vec<_>>().join(",")
-    })
-    .clone()
-}
-#[cfg(not(windows))]
-fn display_drivers() -> String {
-    String::new()
-}
-
-/// Every shader of the game files prepared (minutes, once): the game started hidden, prints its progress, and exits
+/// Every shader of the game files prepared (minutes, once): the game started hidden, prints its progress, and exits.
+/// The game writes the stamp itself when it has prepared them all (runtime/nvn/shader_prep.c).
 fn run_shaders(app: &App, log: &mut fs::File) -> Result<(), String> {
     let mut c = app.runtime();
     c.args(["extracted", "--play"]).env("LARECOMP_GAME_LIB", app.lib()).stdin(Stdio::null());
@@ -956,8 +957,7 @@ fn run_shaders(app: &App, log: &mut fs::File) -> Result<(), String> {
         c.env(v, "1");
     }
     hide_window(&mut c);
-    run_setup(app, Phase::Shaders, c, log)?;
-    fs::write(app.work.join(SHADER_STAMP), shader_stamp(app)).map_err(|e| e.to_string())
+    run_setup(app, Phase::Shaders, c, log)
 }
 
 #[tauri::command]
@@ -1178,6 +1178,7 @@ fn main() {
         crash: Mutex::new(None),
         pick_error: Mutex::new(String::new()),
         code: Mutex::new(None),
+        shaders: Mutex::new(None),
         updater: update::Updater::default(),
         managed,
     });
@@ -1215,6 +1216,7 @@ mod tests {
             crash: Mutex::new(None),
             pick_error: Mutex::new(String::new()),
             code: Mutex::new(None),
+            shaders: Mutex::new(None),
             updater: update::Updater::default(),
             managed: false,
         }
@@ -1298,6 +1300,16 @@ mod tests {
         assert_eq!(parse_status("none\n"), Code::None);
         assert_eq!(parse_status(""), Code::None);
         assert_eq!(parse_status("[vk] ready to render\n"), Code::None);
+    }
+
+    #[test]
+    fn the_runtimes_shader_verdict_is_the_only_rule() {
+        assert!(parse_shaders_status("ready\r\n"));
+        assert!(parse_shaders_status("[vk] x\nready\n"));
+        assert!(!parse_shaders_status("prepare gpu\n"), "a changed driver is not ready");
+        assert!(!parse_shaders_status("prepare none\n"));
+        assert!(!parse_shaders_status(""), "no answer is not ready");
+        assert!(!parse_shaders_status("[vk] ready to render\n"));
     }
 
     #[test]
