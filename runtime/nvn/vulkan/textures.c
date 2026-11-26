@@ -1057,33 +1057,33 @@ VkImageView vk_storage_view(NvnTexture *t, const NvnTextureView *v, bool has_vie
     return vk_image_view(b, b->base_type, b->format, lv0, 1, 0, b->layers, IDENTITY, b->aspect);
 }
 
-// 1x1 black textures for unbound slots, per type
+// 1x1 black textures for unbound slots, per type. Only the image is kept: its view comes from the view table on each
+// use (a cached handle could be evicted from that table and destroyed under us, as vk_dummy_color_view says)
 VkImageView vk_dummy_view(int textype) {
     static TexBackend dummies[10];
-    static VkImageView views[10];
     if (textype < 0 || textype >= 10) textype = TEXTYPE_2D;
-    if (views[textype]) return views[textype];
     TexBackend *b = &dummies[textype];
     VkImageViewType vt = view_type_for(textype);
     bool cube = vt == VK_IMAGE_VIEW_TYPE_CUBE || vt == VK_IMAGE_VIEW_TYPE_CUBE_ARRAY;
-    VkImageCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .flags = cube ? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT : 0,
-                            .imageType = vt == VK_IMAGE_VIEW_TYPE_3D ? VK_IMAGE_TYPE_3D
-                                       : vt == VK_IMAGE_VIEW_TYPE_1D || vt == VK_IMAGE_VIEW_TYPE_1D_ARRAY ? VK_IMAGE_TYPE_1D : VK_IMAGE_TYPE_2D,
-                            .format = VK_FORMAT_R8G8B8A8_UNORM, .extent = {1, 1, 1}, .mipLevels = 1, .arrayLayers = cube ? 6 : 1,
-                            .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
-                            .usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT};
-    VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
-    VK_CHECK(vmaCreateImage(g_vk.vma, &ci, &ai, &b->image, &b->mem, NULL));
-    VkCommandBuffer cb = vk_upload_cmd();
-    vk_image_init_layout(cb, b->image, VK_IMAGE_ASPECT_COLOR_BIT);
-    VkClearColorValue zero = {{0, 0, 0, 0}};
-    VkImageSubresourceRange all = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, cube ? 6 : 1};
-    rec_CmdClearColorImage(cb, b->image, VK_IMAGE_LAYOUT_GENERAL, &zero, 1, &all);
-    b->format = VK_FORMAT_R8G8B8A8_UNORM;
-    b->levels = 1;
-    b->layers = cube ? 6 : 1;
-    views[textype] = vk_image_view(b, vt, b->format, 0, 1, 0, cube ? 6 : 1, IDENTITY, VK_IMAGE_ASPECT_COLOR_BIT);
-    return views[textype];
+    if (!b->image) {
+        VkImageCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .flags = cube ? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT : 0,
+                                .imageType = vt == VK_IMAGE_VIEW_TYPE_3D ? VK_IMAGE_TYPE_3D
+                                           : vt == VK_IMAGE_VIEW_TYPE_1D || vt == VK_IMAGE_VIEW_TYPE_1D_ARRAY ? VK_IMAGE_TYPE_1D : VK_IMAGE_TYPE_2D,
+                                .format = VK_FORMAT_R8G8B8A8_UNORM, .extent = {1, 1, 1}, .mipLevels = 1, .arrayLayers = cube ? 6 : 1,
+                                .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
+                                .usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT};
+        VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
+        VK_CHECK(vmaCreateImage(g_vk.vma, &ci, &ai, &b->image, &b->mem, NULL));
+        VkCommandBuffer cb = vk_upload_cmd();
+        vk_image_init_layout(cb, b->image, VK_IMAGE_ASPECT_COLOR_BIT);
+        VkClearColorValue zero = {{0, 0, 0, 0}};
+        VkImageSubresourceRange all = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, cube ? 6 : 1};
+        rec_CmdClearColorImage(cb, b->image, VK_IMAGE_LAYOUT_GENERAL, &zero, 1, &all);
+        b->format = VK_FORMAT_R8G8B8A8_UNORM;
+        b->levels = 1;
+        b->layers = cube ? 6 : 1;
+    }
+    return vk_image_view(b, vt, b->format, 0, 1, 0, b->layers, IDENTITY, VK_IMAGE_ASPECT_COLOR_BIT);
 }
 
 // Depth compare (sampler*Shadow) needs a view whose format has SAMPLED_IMAGE_DEPTH_COMPARISON: the RGBA8 dummy above
@@ -1112,47 +1112,50 @@ bool vk_tex_depth_compare(NvnTexture *t) {
 
 VkImageView vk_dummy_depth_view(int textype) {
     static TexBackend dummies[10];
-    static VkImageView views[10];
+    static bool failed[10];  // (no depth image: the colour dummy instead)
     if (textype < 0 || textype >= 10) textype = TEXTYPE_2D;
-    if (views[textype]) return views[textype];
     VkImageViewType vt = view_type_for(textype);
-    if (vt != VK_IMAGE_VIEW_TYPE_2D && vt != VK_IMAGE_VIEW_TYPE_2D_ARRAY && vt != VK_IMAGE_VIEW_TYPE_CUBE &&
-        vt != VK_IMAGE_VIEW_TYPE_CUBE_ARRAY)
+    if (failed[textype] || (vt != VK_IMAGE_VIEW_TYPE_2D && vt != VK_IMAGE_VIEW_TYPE_2D_ARRAY && vt != VK_IMAGE_VIEW_TYPE_CUBE &&
+                            vt != VK_IMAGE_VIEW_TYPE_CUBE_ARRAY))
         return vk_dummy_view(textype);
-    static VkFormat df;
-    if (!df) {
-        df = vk_format_depth_compare(VK_FORMAT_D32_SFLOAT) ? VK_FORMAT_D32_SFLOAT : VK_FORMAT_D16_UNORM;
-        LOG("[vk] shadow slot dummy: 1x1 %s cleared to 1.0\n", df == VK_FORMAT_D32_SFLOAT ? "D32_SFLOAT" : "D16_UNORM");
-    }
-    bool cube = vt == VK_IMAGE_VIEW_TYPE_CUBE || vt == VK_IMAGE_VIEW_TYPE_CUBE_ARRAY;
-    uint32_t layers = cube ? 6 : 1;
     TexBackend *b = &dummies[textype];
-    VkImageCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .flags = cube ? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT : 0,
-                            .imageType = VK_IMAGE_TYPE_2D, .format = df, .extent = {1, 1, 1}, .mipLevels = 1,
-                            .arrayLayers = layers, .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
-                            .usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT};
-    VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
-    if (vmaCreateImage(g_vk.vma, &ci, &ai, &b->image, &b->mem, NULL) != VK_SUCCESS) {
-        LOG("[vk] shadow slot dummy: depth image creation failed, the colour dummy instead\n");
-        return views[textype] = vk_dummy_view(textype);
+    if (!b->image) {
+        static VkFormat df;
+        if (!df) {
+            df = vk_format_depth_compare(VK_FORMAT_D32_SFLOAT) ? VK_FORMAT_D32_SFLOAT : VK_FORMAT_D16_UNORM;
+            LOG("[vk] shadow slot dummy: 1x1 %s cleared to 1.0\n", df == VK_FORMAT_D32_SFLOAT ? "D32_SFLOAT" : "D16_UNORM");
+        }
+        bool cube = vt == VK_IMAGE_VIEW_TYPE_CUBE || vt == VK_IMAGE_VIEW_TYPE_CUBE_ARRAY;
+        uint32_t layers = cube ? 6 : 1;
+        VkImageCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .flags = cube ? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT : 0,
+                                .imageType = VK_IMAGE_TYPE_2D, .format = df, .extent = {1, 1, 1}, .mipLevels = 1,
+                                .arrayLayers = layers, .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
+                                .usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT};
+        VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
+        if (vmaCreateImage(g_vk.vma, &ci, &ai, &b->image, &b->mem, NULL) != VK_SUCCESS) {
+            b->image = VK_NULL_HANDLE;
+            failed[textype] = true;
+            LOG("[vk] shadow slot dummy: depth image creation failed, the colour dummy instead\n");
+            return vk_dummy_view(textype);
+        }
+        VkCommandBuffer cb = vk_upload_cmd();
+        vk_image_init_layout(cb, b->image, VK_IMAGE_ASPECT_DEPTH_BIT);
+        VkClearDepthStencilValue one = {1.0f, 0};
+        VkImageSubresourceRange all = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, layers};
+        rec_CmdClearDepthStencilImage(cb, b->image, VK_IMAGE_LAYOUT_GENERAL, &one, 1, &all);
+        VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2, .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                               .srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT, .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                               .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT};
+        VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &mb};
+        rec_CmdPipelineBarrier2(cb, &di);
+        b->format = df;
+        b->levels = 1;
+        b->layers = layers;
+        b->aspect = VK_IMAGE_ASPECT_DEPTH_BIT;
     }
-    VkCommandBuffer cb = vk_upload_cmd();
-    vk_image_init_layout(cb, b->image, VK_IMAGE_ASPECT_DEPTH_BIT);
-    VkClearDepthStencilValue one = {1.0f, 0};
-    VkImageSubresourceRange all = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, layers};
-    rec_CmdClearDepthStencilImage(cb, b->image, VK_IMAGE_LAYOUT_GENERAL, &one, 1, &all);
-    VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2, .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-                           .srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT, .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-                           .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT};
-    VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &mb};
-    rec_CmdPipelineBarrier2(cb, &di);
-    b->format = df;
-    b->levels = 1;
-    b->layers = layers;
-    b->aspect = VK_IMAGE_ASPECT_DEPTH_BIT;
-    views[textype] = vk_image_view(b, vt, df, 0, 1, 0, layers, IDENTITY, VK_IMAGE_ASPECT_DEPTH_BIT);
-    if (!views[textype]) views[textype] = vk_dummy_view(textype);
-    return views[textype];
+    VkImageView v = vk_image_view(b, vt, b->format, 0, 1, 0, b->layers, IDENTITY, VK_IMAGE_ASPECT_DEPTH_BIT);
+    if (!v) failed[textype] = true;
+    return v ? v : vk_dummy_view(textype);
 }
 
 // Throwaway color attachment for passes that have none (exec.c begin_pass, Intel only): R8, at least w x h (the pass's
