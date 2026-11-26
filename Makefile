@@ -288,6 +288,9 @@ $(B)/rt/nvn/smaa_data.o: RTFLAGS += -I$(B)/inc -Ithird_party/smaa/Textures
 $(B)/inc/shader_variants.inc: runtime/nvn/shader_variants.txt
 	@mkdir -p $(dir $@)
 	(LC_ALL=C tr -d '\r' < $< | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e 's/^/"/' -e 's/$$/\\n"/'; echo '""') > $@
+	@# (a release once shipped with this file empty, the list unused: every record must make it in, or no build)
+	@want=$$(grep -c '^[GC] ' $<); got=$$(grep -c '^"[GC] ' $@); \
+	if [ "$$want" != "$$got" ]; then rm -f $@; echo "shader list: $$got of $$want records in $@" >&2; exit 1; fi
 $(B)/rt/nvn/shader_prep.o: $(B)/inc/shader_variants.inc
 $(B)/rt/nvn/shader_prep.o: RTFLAGS += -I$(B)/inc
 # the shader translator's id: part of the shader caches' tag (shader_cache_tag), so a changed translator rebuilds them
