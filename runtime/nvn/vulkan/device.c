@@ -139,8 +139,8 @@ static void exit_after_shot(void);  // (UI thread section)
 
 // ================================================================== instance / device
 // What a faulting GPU address belonged to (vk_device_fault_report). The driver reports every GPU address range it binds
-// and unbinds (VK_EXT_device_address_binding_report): the large ones (the guest heap import, VMA blocks) are kept while
-// bound, the latest 4096 of any size in a ring, so a fault in memory freed a moment ago is named too.
+// and unbinds (VK_EXT_device_address_binding_report): the large memory objects (the guest heap import, VMA blocks) are
+// kept while bound, the latest 4096 of any size in a ring, so a fault in memory freed a moment ago is named too.
 typedef struct { uint64_t base, size, handle; uint32_t objtype; bool unbind; } VaEvent;
 static VaEvent va_ring[4096], va_big[64];
 static uint64_t va_n;
@@ -158,7 +158,9 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL va_cb(VkDebugUtilsMessageSeverityFlagBitsE
                  d->objectCount ? (uint32_t)d->pObjects[0].objectType : 0, b->bindingType == VK_DEVICE_ADDRESS_BINDING_TYPE_UNBIND_EXT};
     pthread_mutex_lock(&va_lk);
     va_ring[va_n++ % 4096] = e;
-    if (e.size >= (64u << 20)) {
+    // (memory objects only: NVIDIA reports each image or buffer bound into a VMA block with the whole block's range, so
+    // a stage's images filled the 64 entries in seconds and no memory bound after them could be named)
+    if (e.objtype == VK_OBJECT_TYPE_DEVICE_MEMORY && e.size >= (64u << 20)) {
         int i = 0;
         while (i < va_nbig && !(va_big[i].base == e.base && va_big[i].handle == e.handle)) i++;
         if (e.unbind && i < va_nbig) va_big[i] = va_big[--va_nbig];
