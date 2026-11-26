@@ -49,6 +49,7 @@ static void snap(Snap *s, uint64_t gcpu) {
 }
 
 static uint64_t d(uint64_t a, uint64_t b) { return a > b ? a - b : 0; }  // (a backend total reset at a reboot: 0)
+int kernel_take_longest_wait(char *b, size_t n, uint64_t min_ns);  // kernel.c: this thread's longest wait, then cleared
 
 #define LOAD_NS 2000000000ull     // a level change: its next 2 s are loading / fading in (measured: up to ~1 s)
 #define WINDOW_NS 60000000000ull  // the rate limit's period
@@ -144,9 +145,12 @@ void slow_frame_present(uint64_t now, uint64_t gcpu) {
             const char *rw = NULL;
             uint64_t rwn = rq_render_longest(&rw);
             if (rw && rwn >= 5000000) PART("%srender thread longest: %s %.0f ms", sep, rw, rwn / 1e6);
+            char kw[256];
+            if (kernel_take_longest_wait(kw, sizeof kw, (uint64_t)limit) > 0) PART("%sgame thread's longest kernel wait: %s", sep, kw);
 #undef PART
             LOG("%s\n", b);
         }
     }
+    kernel_take_longest_wait(NULL, 0, UINT64_MAX);  // (taken above for a logged frame; cleared for the others)
     prev = cur;
 }
