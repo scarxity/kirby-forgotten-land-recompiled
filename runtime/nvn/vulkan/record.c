@@ -28,8 +28,9 @@
 //                       packets); T only hands out indices (`rset_next`, T's alone). An index is reused only
 //                       RSETS allocations later, by which time every packet that named it was recorded, since
 //                       packets run in order
-//   the queue           R's alone (submissions, presents); T uses it only after rec_drain (vkDeviceWaitIdle,
-//                       the heap import probe), when R is idle and nothing is queued
+//   the queue           R's (submissions, presents) and the presenter's (presents with a time, present_run), under
+//                       qmu; T uses it only after rec_drain (vkDeviceWaitIdle, the heap import probe), when R and the
+//                       presenter are idle and nothing is queued
 //   Vulkan objects in   images, views, buffers, samplers, pipelines, layouts, query pools: created by T (or the build
 //   packets             workers) before the packet that names them; destroyed by T only once vkWaitSemaphores /
 //                       vk_completed_seq says the submission that could use them is done - which implies R
@@ -67,6 +68,7 @@ static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t cv_work = PTHREAD_COND_INITIALIZER, cv_done = PTHREAD_COND_INITIALIZER;
 static _Atomic int asleep;
 static _Atomic uint64_t submitted, presents_done;
+static pthread_mutex_t qmu = PTHREAD_MUTEX_INITIALIZER;  // (the queue: the recorder's and the presenter's calls, present_run)
 static _Atomic bool quitting;  // (rec_quit) packets are dropped instead of run
 static _Atomic int present_recreate;
 static uint64_t presents_queued;  // (T)
@@ -288,6 +290,7 @@ void rec_drain(void) {
     if (on <= 0) return;
     publish();
     drain_to(wpos, &st_t.drains, &st_t.drain_ns);
+    rec_wait_presents(presents_queued);  // (and the presenter's: the queue is idle)
 }
 void rec_drain_published(void) {
     if (on <= 0 || pthread_equal(pthread_self(), rec_thread)) return;  // (an exit from the recorder itself: nothing to wait for)
@@ -578,7 +581,9 @@ static void submit_run(const void *p) {
                         .waitSemaphoreInfoCount = a->nwait, .pWaitSemaphoreInfos = &a->wait};
     uint64_t t0 = NOW();
     rq_watch("vkQueueSubmit2", a->seq);  // (a hang dump names it)
+    pthread_mutex_lock(&qmu);
     VkResult r = vkQueueSubmit2(g_vk.queue, 1, &si, VK_NULL_HANDLE);
+    pthread_mutex_unlock(&qmu);
     rq_watch(NULL, 0);
     uint64_t dt = NOW() - t0;
     if (prof) ADD(r_submit_ns, dt);
@@ -608,9 +613,55 @@ void rec_QueueSubmit2(const VkSubmitInfo2 *si, uint64_t seq) {
     ENQ_END();
 }
 
-typedef struct { VkSemaphore wait; VkSwapchainKHR swapchain; uint32_t image; int kind; uint64_t frame; } PresentArgs;
+typedef struct { VkSemaphore wait; VkSwapchainKHR swapchain; uint32_t image; int kind; uint64_t frame, not_before; } PresentArgs;
+// Presents with a time (Frame Generation: its images spaced over the game's frame) are made by a thread of their own,
+// so the recorder goes on submitting the next frame's work meanwhile, and so does the render thread: a wait on either
+// held the game back (a 30 fps game spaced with the render thread asleep half of each frame fell to 10 fps on an RTX
+// 3050 Laptop - the slower the frame, the longer the wait). The queue is then shared: qmu around its calls. Once one
+// present waits there, the later ones queue behind it, in order.
+static bool presenter_on;  // (under mu)
+static PresentArgs pq[8];
+static unsigned pq_head, pq_tail;  // (under mu)
+static pthread_cond_t cv_pq = PTHREAD_COND_INITIALIZER;
+static void present_now(const PresentArgs *a);
+static void *presenter(void *arg) {
+    (void)arg;
+    pthread_mutex_lock(&mu);
+    for (;;) {
+        while (pq_tail == pq_head) pthread_cond_wait(&cv_pq, &mu);
+        PresentArgs a = pq[pq_tail % 8];
+        pthread_mutex_unlock(&mu);
+        if (a.not_before > NOW()) plat_sleep_until_ns(a.not_before);
+        present_now(&a);
+        pthread_mutex_lock(&mu);
+        pq_tail++;
+        pthread_cond_broadcast(&cv_done);  // (present_run waiting for room; presents_done's waiters)
+    }
+    return NULL;
+}
 static void present_run(const void *p) {
     const PresentArgs *a = p;
+    if (on > 0) {
+        pthread_mutex_lock(&mu);
+        if (a->not_before || pq_tail != pq_head) {
+            if (!presenter_on) {
+                pthread_t th;
+                presenter_on = pthread_create(&th, NULL, presenter, NULL) == 0;
+                if (presenter_on) pthread_detach(th);
+            }
+            if (presenter_on) {
+                while (pq_head - pq_tail >= 8) timed_wait(&cv_done, 2000000);
+                pq[pq_head++ % 8] = *a;
+                pthread_cond_signal(&cv_pq);
+                pthread_mutex_unlock(&mu);
+                return;
+            }
+        }
+        pthread_mutex_unlock(&mu);
+    } else if (a->not_before > NOW()) plat_sleep_until_ns(a->not_before);
+    present_now(a);
+}
+static void present_now(const PresentArgs *a) {
     VkPresentInfoKHR pi = {.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, .waitSemaphoreCount = 1, .pWaitSemaphores = &a->wait,
                            .swapchainCount = 1, .pSwapchains = &a->swapchain, .pImageIndices = &a->image};
     VkPresentIdKHR pid;
@@ -618,7 +669,9 @@ static void present_run(const void *p) {
     ft_present_lock(&pi, &pid, &id);
     uint64_t t0 = NOW();
     rq_watch("vkQueuePresentKHR", a->image);
+    pthread_mutex_lock(&qmu);
     VkResult r = vkQueuePresentKHR(g_vk.queue, &pi);
+    pthread_mutex_unlock(&qmu);
     rq_watch(NULL, 0);
     uint64_t dt = NOW() - t0;
     ft_present_done(a->swapchain, id, a->kind, a->frame, t0, t0 + dt, r == VK_SUCCESS || r == VK_SUBOPTIMAL_KHR);
@@ -647,8 +700,8 @@ static void present_run(const void *p) {
         pthread_mutex_unlock(&mu);
     }
 }
-void rec_QueuePresentKHR(VkSemaphore wait, VkSwapchainKHR swapchain, uint32_t image, int kind, uint64_t frame) {
-    PresentArgs a = {wait, swapchain, image, kind, frame};
+void rec_QueuePresentKHR(VkSemaphore wait, VkSwapchainKHR swapchain, uint32_t image, int kind, uint64_t frame, uint64_t not_before) {
+    PresentArgs a = {wait, swapchain, image, kind, frame, not_before};
     presents_queued++;
     if (on <= 0) {  // (the wait is this thread's: idle for the pacer, as before)
         uint64_t t0 = NOW();
