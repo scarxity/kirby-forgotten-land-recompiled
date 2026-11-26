@@ -15,8 +15,9 @@ Versions are tagged `vX.Y.Z`. Small fixes bump the last number; features and lar
   skipped. Two of the four 0.3.3 logs players sent came from installs that played with almost no shaders prepared.
 - **Frame Generation:** the in-between image and the game's own image were shown one display refresh apart, so at
   120 or 144 Hz the in-between showed for 7 ms and the game's image for 26 ms. Motion jumped and stopped every frame.
-  The images are now spaced evenly over the game's frame. Measured on an RTX 3050 Laptop, the same route in 11 runs:
-  in-between images went from 7 to 27-28 a second, and frames shown without one from 75% to under 1%. 60 Hz displays
+  The images are now spaced evenly over the game's frame. Measured on an RTX 3050 Laptop over the same route: in-between
+  images went from 7 to 27-29 a second, and frames shown without one from 75% to under 1% (5 runs on the release zip:
+  29.2-29.5 a second, 0.1-0.6% without one, no image held over 50 ms). 60 Hz displays
   now get in-between images too (they had none).
 
 Unzip over 0.3.3: the game code from 0.3.3 is used as it is, so it isn't rebuilt. The shaders are prepared again once,
@@ -28,14 +29,16 @@ started another way prepares them itself before it starts.
   tests in a container, but nobody has played it on Linux yet. Set it up once with `--prepare <your game folder>` in a
   terminal, then start the AppImage to play ([docs/linux.md](docs/linux.md)). It uses saschb2b's Linux fixes from
   [#8](https://github.com/scarxity/kirby-forgotten-land-recompiled/issues/8). There is no macOS build in this version
-- 333 shader variant records from the logs four players sent with 0.3.3 (the list goes from 2141 to 2474 records)
+- 333 shader variant records from the logs four players sent with 0.3.3, and 3 from this version's test plays (the
+  list goes from 2141 to 2477 records)
+- The build stops if the shader list doesn't make it into the game whole (a test build of this version had it empty)
 - A device loss now logs which GPU memory the fault hit, on NVIDIA too, for the next crash report
 
 ### Changed
 - The aspect ratio setting is gone. Its only other choice, Unlocked, has done nothing since 0.3.0: the game is drawn
   at 16:9. The first-start question about it is gone too, and an old `larecomp.ini` line for it is ignored
 - A stage's first frame takes about half as long: its textures are converted on 1 or 2 worker threads while the
-  frame is recorded. On an RTX 3050 Laptop the render thread's time for that frame went from 123-159 ms to 52-70 ms
+  frame is recorded. On an RTX 3050 Laptop the render thread's time for that frame went from 123-159 ms to 44-60 ms
 
 ### Fixed
 - AMD graphics cards on Linux (RADV) lost the device on the first frames that draw text (RX 9060 XT, Mesa 26.2). The
@@ -49,6 +52,8 @@ started another way prepares them itself before it starts.
 - The device-lost crashes in [#10](https://github.com/scarxity/kirby-forgotten-land-recompiled/issues/10) and
   [#17](https://github.com/scarxity/kirby-forgotten-land-recompiled/issues/17) are not reproduced. This version fixes
   the AMD device loss above and the destroyed placeholder image, but neither is known to be those crashes
+- A stage's first frame can still build one to five pipelines as it loads: up to about 0.1 s on Level 2's first stage
+  (measured by jumping straight to the stage on an RTX 3050 Laptop)
 - The Linux AppImage has not been played on Linux
 - Frame Generation is still experimental. It was measured on one laptop (RTX 3050, from the program's own timing)
   and is not yet judged by eye on any other display
