@@ -662,11 +662,6 @@ static void tab_display(void) {
     float scale = ImGui::GetFontSize() / 34;
     opt_begin("##video", scale);
     opt_section("Display");
-    const char *aspects[] = {LN("Unlocked"), LN("Original 16:9")};
-    preview_text(LN("Configure the shape of the picture. Unlocked fills the window, Original keeps 16:9."), NULL);
-    opt_preview("Aspect ratio", &g_settings.aspect, aspects, 2, ASPECT_ORIGINAL,
-               "Unlocked fills the window and shows more of the island on wide screens, up to ultrawide. Original keeps "
-               "the game's 16:9 view with bars.");
     bool fs = g_settings.fullscreen;
     if (!PLAT_TOUCH && opt_toggle("Fullscreen", &fs, false, "Fills the screen. You can also press F11, Alt+Enter or Cmd+Ctrl+F.")) {
         g_settings.fullscreen = fs;
@@ -980,11 +975,9 @@ static void notice_popup(float scale) {
     ImGui::EndPopup();
 }
 
-// Reset to vanilla (the round arrow beside the close X): the game as Nintendo made it - 16:9; Video / Audio otherwise
-// and the controls stay.
+// Reset to vanilla (the round arrow beside the close X): the game as Nintendo made it. It only ever reset the aspect
+// ratio to 16:9, which is now the one choice, so it changes nothing today; Video / Audio and the controls stay.
 static void reset_to_vanilla(bool in_game) {
-    Settings &s = g_settings;
-    s.aspect = ASPECT_ORIGINAL;
     LOG("[menu] reset to vanilla%s\n", !in_game ? " (start screen)" : "");
     settings_save();
 }

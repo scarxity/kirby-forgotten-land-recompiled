@@ -1021,46 +1021,6 @@ static void notice_popup(float s) {
     ImGui::PopFont();
     ImGui::EndPopup();
 }
-// First PLAY ever, before the menu note: authentic 16:9 or the unlocked (fill the window) aspect ratio.
-static bool aspect_prompt(float s) {
-    bool done = false;
-    ImVec2 ds = ImGui::GetIO().DisplaySize;
-    ImGui::SetNextWindowPos(ImVec2(ds.x * 0.5f, ds.y * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
-    ImGui::SetNextWindowSize(ImVec2(fminf(ds.x * 0.8f, 760 * s), 0));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(36 * s, 28 * s));
-    bool open = ImGui::BeginPopupModal("##aspect", NULL, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
-                                       ImGuiWindowFlags_NoMove | ImGuiWindowFlags_AlwaysAutoResize);
-    ImGui::PopStyleVar();
-    if (open) {  // (in the menus' look, as the data folder's question: the caller turns the pieces on)
-        ImGui::PushFont(g_font_small);
-        ImGui::PushFont(g_font_menu);
-        ImGui::PushTextWrapPos(0);
-        ImGui::TextColored(plastic_col(plastic_theme().title), "%s", L("How would you like to play?"));
-        ImGui::PopFont();
-        ImGui::Spacing();
-        ImGui::TextColored(plastic_col(plastic_theme().text_dim), "%s", L("You can change this any time in Settings."));
-        ImGui::PopTextWrapPos();
-        ImGui::Dummy(ImVec2(0, 14 * s));
-        float bw = 300 * s, gap = 20 * s;
-        ImGui::SetCursorPosX((ImGui::GetWindowWidth() - 2 * bw - gap) * 0.5f);
-        int pick = -1;
-        ImGui::SetItemDefaultFocus();
-        if (ImGui::Button(L("Original 16:9"), ImVec2(bw, 44 * s))) pick = ASPECT_ORIGINAL;
-        ImGui::SameLine(0, gap);
-        if (ImGui::Button(L("Unlocked, fill the screen"), ImVec2(bw, 44 * s))) pick = ASPECT_UNLOCKED;
-        if (pick >= 0) {
-            g_settings.aspect = pick;
-            g_settings.aspect_asked = true;
-            settings_save();
-            ImGui::CloseCurrentPopup();
-            done = true;
-        }
-        ImGui::PopFont();
-        ImGui::EndPopup();
-    }
-    return done;
-}
-
 static bool menu_tip(float s) {
     bool go = false;
     ImVec2 ds = ImGui::GetIO().DisplaySize;
@@ -2167,7 +2127,7 @@ extern "C" void launcher_run(const char *root) {
     Page page = status.empty() ? MAIN : SETUP;
     bool play = false;
     // LARECOMP_LAUNCHER_SHOT=<frame>[:<page>] (test): save build/launcher.png at that frame and exit; page:
-    // settings[:<tab>] / askdelete / setup / extracting / preparing / recompiling / tip / aspect / notice
+    // settings[:<tab>] / askdelete / setup / extracting / preparing / recompiling / tip / notice
     long shot_at = getenv("LARECOMP_LAUNCHER_SHOT") ? atol(getenv("LARECOMP_LAUNCHER_SHOT")) : 0, frame = 0;
     if (shot_at) {
 #ifdef __APPLE__
@@ -2186,7 +2146,6 @@ extern "C" void launcher_run(const char *root) {
         if (pg && !strcmp(pg + 1, "notice"))  // (the iPhone's iCloud notice, anywhere)
             g_notice = std::string(L("Some of LAS Recomp's files aren't on this iPhone. They download as the game reads "
                                      "them, so it may be very slow or close.")) + "\n\n" + L(KEEP_DOWNLOADED);
-        if (pg && !strcmp(pg + 1, "aspect")) g_settings.aspect_asked = g_settings.menu_tip_seen = false, g_tip_test = true;
     }
 
     static int runs;  // (test: =once - only the first time, so a "Title screen" reboot lands on the start screen)
@@ -2532,19 +2491,14 @@ extern "C" void launcher_run(const char *root) {
                     ImGui::SetWindowFontScale(1.0f);
                 }
 
-                // first start ever: the aspect ratio question, then how to reach our menu, then the game
+                // first start ever: how to reach our menu, then the game
                 if (g_play_pending && status.empty()) pressed = true, g_play_pending = false;
                 if (pressed) {
-                    if (!g_settings.aspect_asked) ImGui::OpenPopup("##aspect");
-                    else if (!g_settings.menu_tip_seen) ImGui::OpenPopup("##menutip");
+                    if (!g_settings.menu_tip_seen) ImGui::OpenPopup("##menutip");
                     else play = true;
                 }
-                if (g_tip_test) ImGui::OpenPopup(g_settings.aspect_asked ? "##menutip" : "##aspect"), g_tip_test = false;
+                if (g_tip_test) ImGui::OpenPopup("##menutip"), g_tip_test = false;
                 menu_style_begin(ImGui::GetIO().DisplaySize.y / 1080.0f), plastic_widgets(true);
-                if (aspect_prompt(s)) {
-                    if (g_settings.menu_tip_seen) play = true;
-                    else ImGui::OpenPopup("##menutip");
-                }
                 if (menu_tip(s)) play = true;
                 plastic_widgets(false), menu_style_end();
                 ImGui::SetCursorPosX(x0);
