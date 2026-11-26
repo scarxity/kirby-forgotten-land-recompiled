@@ -455,6 +455,7 @@ typedef struct {
     bool eos_pending;
     int64_t eos_time;
     bool stopped;  // Stop / destroyed: no more events (see dec_stop)
+    bool format_told;  // the output format changed event signalled (before the first output, see dec_signal_output)
     pthread_mutex_t lock;
 } Decoder;
 
@@ -488,6 +489,20 @@ static void dec_signal(Cpu *c, Decoder *d, int i) {
     pthread_mutex_lock(&d->lock);
     if (!d->stopped) signal_guest_event(c, d->events[i]);
     pthread_mutex_unlock(&d->lock);
+}
+
+// Output is ready: the output format changed event first, once, as a hardware decoder reports the format of its first
+// output. The game's movie loader thread waits up to 5 s for it before it reads the format (main 0x700077008c,
+// TimedWaitEvent): never signalled, a clip stopped before the 5 s were up left the game logic thread in WaitThread on
+// the loader (main 0x7000770f98) until the wait ran out, and the presenting thread waited for it (a 1-4 s freeze).
+static void dec_signal_output(Cpu *c, Decoder *d) {
+    pthread_mutex_lock(&d->lock);
+    if (!d->stopped && !d->format_told) {
+        d->format_told = true;
+        signal_guest_event(c, d->events[2]);
+    }
+    pthread_mutex_unlock(&d->lock);
+    dec_signal(c, d, 1);
 }
 
 typedef struct NvnTexture NvnTexture;
@@ -713,7 +728,7 @@ static void dec_send_input(Cpu *c) {
     if (idx >= 0 && idx < NIN) d->in_busy[idx] = false;
     pthread_mutex_unlock(&d->lock);
     dec_signal(c, d, 0);
-    if (produced) dec_signal(c, d, 1);
+    if (produced) dec_signal_output(c, d);
     c->x[0] = 0;
 }
 
@@ -788,7 +803,7 @@ static void dec_release_output(Cpu *c) {
     if (i >= 0 && i < NOUT) d->out_busy[i] = false;
     bool produced = flush_pending(d);
     pthread_mutex_unlock(&d->lock);
-    if (produced) dec_signal(c, d, 1);
+    if (produced) dec_signal_output(c, d);
     c->x[0] = 0;
 }
 
