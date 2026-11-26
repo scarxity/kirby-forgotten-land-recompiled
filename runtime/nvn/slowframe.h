@@ -3,7 +3,10 @@
 //   [slow] frame 4123 83 ms in Field: 3 pipelines built (41 ms, 1 from cache), 2 programs compiled (12 ms),
 //          2 shaders translated (3 ms), 12 texture uploads 4.1 MB, 5 full texture hashes, 9 submissions,
 //          gpu wait 2 ms, render cpu 18 ms, game cpu 11 ms
-// At most 20 lines a minute; the slow frames past that, and those during loads (not in play, or within 2 s of a
+// With texture uploads it adds what the render thread spent on them: "texture hashing 2 ms, convert + copy 7 ms" (the
+// big ones are done by worker threads, textures.c: the time waiting for them is in the second figure), and "407 images
+// created (32 ms), 426 views created (2 ms)".
+// At most 20 lines a minute (LARECOMP_SLOW_FRAME_LINES=<n>: n); the slow frames past that, and those during loads (not in play, or within 2 s of a
 // level change), are only counted, in one summary line per minute. Normal frames cost a few counter reads.
 //
 // The counts are what happened between the two presents, on any thread: builds finish on worker threads, the render
@@ -21,6 +24,9 @@ void slow_note_build(const char *what, uint64_t ns);  // what: "pipeline ..." (g
 void slow_note_cache_hit(void);                       // a pipeline build the driver's / archive's cache served
 void slow_note_upload(uint64_t bytes);                // a texture's contents uploaded (guest bytes)
 void slow_note_full_hash(void);                       // a texture's contents hashed in full
+void slow_note_tex_ns(uint64_t hash_ns, uint64_t convert_ns);  // render thread: time spent hashing / converting + copying a texture
+void slow_note_image_ns(uint64_t ns);                    // a texture's image created (its backend's first use)
+void slow_note_view_ns(uint64_t ns);                     // an image view created
 // maxwell_translate, counted and timed (the backends call this instead)
 ShaderInfo *slow_translate(const uint8_t *code, size_t max_size, int stage, const ShaderKey *key);
 

@@ -11,7 +11,7 @@
 #define ADD(v, n) __atomic_fetch_add(&(v), (n), __ATOMIC_RELAXED)
 #define GET(v) __atomic_load_n(&(v), __ATOMIC_RELAXED)
 
-static uint64_t n_pipes, pipe_ns, n_hits, n_progs, prog_ns, n_tr, tr_ns, n_uploads, upload_bytes, n_hashes;
+static uint64_t n_pipes, pipe_ns, n_hits, n_progs, prog_ns, n_tr, tr_ns, n_uploads, upload_bytes, n_hashes, hash_ns, convert_ns, n_images, image_ns, n_views, view_ns;
 
 void slow_note_build(const char *what, uint64_t ns) {
     if (!strncmp(what, "pipeline", 8)) ADD(n_pipes, 1), ADD(pipe_ns, ns);
@@ -23,6 +23,9 @@ void slow_build_totals(uint64_t v[6]) {
 }
 void slow_note_upload(uint64_t bytes) { ADD(n_uploads, 1), ADD(upload_bytes, bytes); }
 void slow_note_full_hash(void) { ADD(n_hashes, 1); }
+void slow_note_tex_ns(uint64_t h, uint64_t c) { ADD(hash_ns, h), ADD(convert_ns, c); }
+void slow_note_image_ns(uint64_t ns) { ADD(n_images, 1), ADD(image_ns, ns); }
+void slow_note_view_ns(uint64_t ns) { ADD(n_views, 1), ADD(view_ns, ns); }
 ShaderInfo *slow_translate(const uint8_t *code, size_t max_size, int stage, const ShaderKey *key) {
     uint64_t t0 = plat_now_ns();
     ShaderInfo *r = maxwell_translate(code, max_size, stage, key);
@@ -31,7 +34,7 @@ ShaderInfo *slow_translate(const uint8_t *code, size_t max_size, int stage, cons
 }
 
 typedef struct {
-    uint64_t pipes, pipe_ns, hits, progs, prog_ns, tr, tr_ns, uploads, up_bytes, hashes, imports, submits, wait_ns, rcpu, gcpu;
+    uint64_t pipes, pipe_ns, hits, progs, prog_ns, tr, tr_ns, uploads, up_bytes, hashes, hash_ns, convert_ns, images, image_ns, views, view_ns, imports, submits, wait_ns, rcpu, gcpu;
     uint64_t rqw, blocked, present;  // (the game thread's own: waits for the render thread, vsync / pacer waits, presents)
 } Snap;
 
@@ -40,7 +43,8 @@ static void snap(Snap *s, uint64_t gcpu) {
     s->pipes = GET(n_pipes), s->pipe_ns = GET(pipe_ns), s->hits = GET(n_hits);
     s->progs = GET(n_progs), s->prog_ns = GET(prog_ns);
     s->tr = GET(n_tr), s->tr_ns = GET(tr_ns);
-    s->uploads = GET(n_uploads), s->up_bytes = GET(upload_bytes), s->hashes = GET(n_hashes);
+    s->uploads = GET(n_uploads), s->up_bytes = GET(upload_bytes), s->hashes = GET(n_hashes), s->hash_ns = GET(hash_ns), s->convert_ns = GET(convert_ns);
+    s->images = GET(n_images), s->image_ns = GET(image_ns), s->views = GET(n_views), s->view_ns = GET(view_ns);
     renderer_slow_counters(&s->submits, &s->wait_ns, &s->imports);
     s->rcpu = rq_render_cpu_ns();
     s->gcpu = gcpu;
@@ -53,7 +57,8 @@ int kernel_take_longest_wait(char *b, size_t n, uint64_t min_ns);  // kernel.c: 
 
 #define LOAD_NS 2000000000ull     // a level change: its next 2 s are loading / fading in (measured: up to ~1 s)
 #define WINDOW_NS 60000000000ull  // the rate limit's period
-#define LINES_PER_WINDOW 20
+#define LINES_PER_WINDOW 20  // (LARECOMP_SLOW_FRAME_LINES: another number, for measuring a run's every slow frame)
+static int lines_per_window = -1;
 
 // The level now, compared with the one seen last: a change starts a load window. False: not in play (title, file
 // select, the start screen, a reboot) - loading as well.
@@ -78,6 +83,8 @@ void slow_frame_present(uint64_t now, uint64_t gcpu) {
         const char *e = getenv("LARECOMP_SLOW_FRAME_MS");
         limit = (e ? atoll(e) : 50) * 1000000ll;
         if (limit < 0) limit = 0;
+        const char *l = getenv("LARECOMP_SLOW_FRAME_LINES");
+        lines_per_window = l ? atoi(l) : LINES_PER_WINDOW;
     }
     if (!limit) return;
     static uint64_t last, frames, changed_at, win_start, win_lines, win_busy, win_load;
@@ -91,7 +98,7 @@ void slow_frame_present(uint64_t now, uint64_t gcpu) {
     if (win_start && now - win_start >= WINDOW_NS) {
         if (win_busy || win_load) {
             char s[160] = "";
-            if (win_busy) snprintf(s, sizeof s, "%llu past the limit of %d lines", (unsigned long long)win_busy, LINES_PER_WINDOW);
+            if (win_busy) snprintf(s, sizeof s, "%llu past the limit of %d lines", (unsigned long long)win_busy, lines_per_window);
             if (win_load)
                 snprintf(s + strlen(s), sizeof s - strlen(s), "%s%llu during loads", win_busy ? ", " : "", (unsigned long long)win_load);
             LOG("[slow] %llu more slow frame%s in the last minute, not logged (%s)\n", (unsigned long long)(win_busy + win_load),
@@ -104,7 +111,7 @@ void slow_frame_present(uint64_t now, uint64_t gcpu) {
         bool play = level_check(now, &changed_at, lv, sizeof lv);
         if (!win_start) win_start = now;
         if (!play || now - changed_at < LOAD_NS) win_load++;
-        else if (win_lines >= LINES_PER_WINDOW) win_busy++;
+        else if (win_lines >= (uint64_t)lines_per_window) win_busy++;
         else {
             win_lines++;
             extern uint64_t renderer_present_count(void);
@@ -129,6 +136,12 @@ void slow_frame_present(uint64_t now, uint64_t gcpu) {
                 else PART("%s%llu texture upload%s %.1f MB", sep, (unsigned long long)v, v == 1 ? "" : "s", by / 1048576.0);
             }
             if ((v = d(cur.hashes, prev.hashes))) PART("%s%llu full texture hash%s", sep, (unsigned long long)v, v == 1 ? "" : "es");
+            if (d(cur.hash_ns, prev.hash_ns) + d(cur.convert_ns, prev.convert_ns) >= 1000000)
+                PART("%stexture hashing %.0f ms, convert + copy %.0f ms", sep, d(cur.hash_ns, prev.hash_ns) / 1e6, d(cur.convert_ns, prev.convert_ns) / 1e6);
+            if ((v = d(cur.images, prev.images)))
+                PART("%s%llu image%s created (%.0f ms)", sep, (unsigned long long)v, v == 1 ? "" : "s", d(cur.image_ns, prev.image_ns) / 1e6);
+            if ((v = d(cur.views, prev.views)))
+                PART("%s%llu view%s created (%.0f ms)", sep, (unsigned long long)v, v == 1 ? "" : "s", d(cur.view_ns, prev.view_ns) / 1e6);
             if ((v = d(cur.imports, prev.imports))) PART("%s%llu heap import%s", sep, (unsigned long long)v, v == 1 ? "" : "s");
             v = d(cur.submits, prev.submits);
             PART("%s%llu submission%s", sep, (unsigned long long)v, v == 1 ? "" : "s");

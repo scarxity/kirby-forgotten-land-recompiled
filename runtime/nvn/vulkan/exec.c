@@ -591,9 +591,11 @@ static void cb_early_reset(Sub *s) {
 }
 
 // Submit the pending work (if any). wait/signal: binary semaphores for presentation (may be null).
+void tex_fill_flush(void);  // (textures.c: uploads' fills on worker threads)
 void vk_submit_extra(VkSemaphore wait, VkSemaphore signal, VkCommandBuffer extra) {
     (void)extra;
     vk_end_pass();
+    tex_fill_flush();  // (the upload copies read what they wrote)
     Sub *s = sub();
     if (!s->main_begun && !s->upload_begun && !wait && !signal) return;
     VkCommandBufferSubmitInfo cbs[2];
