@@ -545,7 +545,7 @@ static void release_backend_texture(NvnTexture *t, TexBackend *b) {  // (also dr
 }
 
 void backend_texture_destroyed(NvnTexture *t) {
-    interp_texture_destroyed();
+    interp_texture_destroyed(NULL);  // (Metal doesn't record the frame's textures: any destroy is a cut)
     TexBackend *b = t->backend;
     renderer_texture_gone(t, NULL);  // its snapshot copy
     if (b) { reg_remove(b); release_backend_texture(t, b); free(b); }

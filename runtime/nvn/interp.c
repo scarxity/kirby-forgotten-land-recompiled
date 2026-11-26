@@ -396,12 +396,32 @@ bool interp_replay_lock(void) {
 }
 void interp_replay_unlock(void) { pthread_mutex_unlock(&free_lock); }
 
+// The textures the frame's lists used (textures.c: every GPU use of one goes through tex_backend). A texture the game
+// destroys while the frame runs makes it a cut only if the frame used it - its replays would draw with a freed texture.
+// Every destroy counted made the guide clips' frames cuts (a movie texture a frame destroyed: 65% of the first stage's
+// frames without in-betweens while one plays) and their images shown twice as long as the rest.
+#define UBITS 12
+static const void *used_tex[1 << UBITS];
+static bool used_full;
+static bool used_slot(const void *t, bool add) {
+    uint32_t h = (uint32_t)(((uintptr_t)t * 0x9E3779B97F4A7C15ull) >> (64 - UBITS));
+    for (int i = 0; i < (1 << UBITS); i++, h = (h + 1) & ((1 << UBITS) - 1)) {
+        if (used_tex[h] == t) return true;
+        if (!used_tex[h]) { if (add) used_tex[h] = t; return add; }
+    }
+    if (add) used_full = true;
+    return false;
+}
+void interp_texture_used(const void *t) {
+    if (frame_open && g_interp_log && !g_interp_replaying && t) used_slot(t, true);
+}
 bool interp_list_submitted(uint64_t handle) {
     if (!g_interp_log || g_interp_replaying) return false;
     bool first = !frame_open;
     if (first) {
         frame_open = true;
         memset(occ_keys, 0, sizeof occ_keys);
+        memset(used_tex, 0, sizeof used_tex), used_full = false;
         cur->free_gen = atomic_load(&free_gen);
         atomic_store(&free_kinds, 0);
     }
@@ -410,7 +430,7 @@ bool interp_list_submitted(uint64_t handle) {
     return first;
 }
 
-void interp_texture_destroyed(void) { if (frame_open) cur->destroyed = true; }
+void interp_texture_destroyed(const void *t) { if (frame_open && (!t || used_full || used_slot(t, false))) cur->destroyed = true; }
 
 // ---- replay cursor
 static uint32_t rp_draw, rp_cb;

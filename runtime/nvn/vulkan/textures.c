@@ -571,6 +571,7 @@ static void live_remove(TexBackend *b) {
 }
 
 static TexBackend *tex_backend(NvnTexture *t) {
+    interp_texture_used(t);
     TexBackend *b = t->backend;
     if (b) {
         if (b->scalable && (b->ax != tex_alloc_x(b) || b->ay != tex_alloc_y(b))) {  // output resolution changed: reallocate
@@ -598,8 +599,8 @@ void backend_texture_destroyed(NvnTexture *t) {
     TexBackend *b = t->backend;
     extern NvnTexture *g_vk_shown;  // (device.c: the last frame shown, copied when frames are held for shader builds)
     if (t == g_vk_shown) g_vk_shown = NULL;
-    extern void interp_texture_destroyed(void);
-    interp_texture_destroyed();  // (frame interpolation: a texture the frame may have drawn with went away)
+    extern void interp_texture_destroyed(const void *t);
+    interp_texture_destroyed(t);  // (frame interpolation: a texture the frame may have drawn with went away)
     if (b) {
         extern void vk_alias_texture_destroyed(NvnTexture *t);  // (exec.c copy aliases: a source's contents handed over)
         vk_alias_texture_destroyed(t);
