@@ -680,9 +680,6 @@
 {"Couldn't save", "セーブできませんでした"},
 {"The game may say it saved, but it didn't. Your previous save is unchanged.", "ゲーム内ではセーブしたと表示されることがありますが、セーブされていません。前のセーブデータはそのままです。"},
 {"Make sure this folder can be written to and the disk has free space:", "このフォルダーに書き込めること、ディスクに空き容量があることを確認してください:"},
-{"Reset to vanilla?", "通常の設定に戻しますか？"},
-{"This resets your settings to the vanilla game experience.\nYour controls stay as they are.", "設定を通常のゲームの状態に戻します。\n操作設定はそのままです。"},
-{"This also ends the current randomizer seed.\nIts save files are kept.", "現在のランダマイザーのシードも終了します。\nそのセーブデータは残ります。"},
 {"Enter your name", "名前を入力"},
 {"Enter  confirm      Esc  cancel      (%d / %d)", "Enter  決定      Esc  キャンセル      (%d / %d)"},
 {"Video", "映像"},
@@ -710,7 +707,6 @@
 {"+1 Heart", "ハート+1"},
 {"Secret Seashells", "ヒミツの貝がら"},
 // runtime/ui/plastic.mm
-{"Reset to vanilla", "通常の設定に戻す"},
 // runtime/ui/race_overlay.mm
 {"SEED HASH", "シードハッシュ"},
 // runtime/ui/rando_tab.mm

@@ -680,9 +680,6 @@
 {"Couldn't save", "Не удалось сохранить"},
 {"The game may say it saved, but it didn't. Your previous save is unchanged.", "Игра может сообщить, что сохранение прошло, но это не так. Предыдущее сохранение не изменилось."},
 {"Make sure this folder can be written to and the disk has free space:", "Убедитесь, что в эту папку можно записывать и на диске есть свободное место:"},
-{"Reset to vanilla?", "Вернуть оригинал?"},
-{"This resets your settings to the vanilla game experience.\nYour controls stay as they are.", "Настройки вернутся к оригинальной игре.\nУправление останется как есть."},
-{"This also ends the current randomizer seed.\nIts save files are kept.", "Также завершится текущий сид рандомайзера.\nЕго сохранения останутся."},
 {"Enter your name", "Введите имя"},
 {"Enter  confirm      Esc  cancel      (%d / %d)", "Enter  подтвердить      Esc  отмена      (%d / %d)"},
 {"Video", "Видео"},
@@ -710,7 +707,6 @@
 {"+1 Heart", "+1 сердце"},
 {"Secret Seashells", "Редкие ракушки"},
 // runtime/ui/plastic.mm
-{"Reset to vanilla", "Вернуть оригинал"},
 // runtime/ui/race_overlay.mm
 {"SEED HASH", "ХЕШ СИДА"},
 // runtime/ui/rando_tab.mm

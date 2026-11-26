@@ -680,9 +680,6 @@
 {"Couldn't save", "저장하지 못했습니다"},
 {"The game may say it saved, but it didn't. Your previous save is unchanged.", "게임에서는 저장됐다고 나올 수 있지만 저장되지 않았습니다. 이전 세이브 데이터는 그대로입니다."},
 {"Make sure this folder can be written to and the disk has free space:", "이 폴더에 쓸 수 있는지, 디스크에 여유 공간이 있는지 확인하세요:"},
-{"Reset to vanilla?", "오리지널로 초기화할까요?"},
-{"This resets your settings to the vanilla game experience.\nYour controls stay as they are.", "설정을 오리지널 게임 그대로 초기화합니다.\n조작 설정은 그대로 남습니다."},
-{"This also ends the current randomizer seed.\nIts save files are kept.", "현재 랜더마이저 시드도 종료됩니다.\n시드의 세이브 데이터는 남습니다."},
 {"Enter your name", "이름을 입력하세요"},
 {"Enter  confirm      Esc  cancel      (%d / %d)", "Enter  결정      Esc  취소      (%d / %d)"},
 {"Video", "비디오"},
@@ -710,7 +707,6 @@
 {"+1 Heart", "하트 +1"},
 {"Secret Seashells", "비밀의 소라껍데기"},
 // runtime/ui/plastic.mm
-{"Reset to vanilla", "오리지널로 초기화"},
 // runtime/ui/race_overlay.mm
 {"SEED HASH", "시드 해시"},
 // runtime/ui/rando_tab.mm

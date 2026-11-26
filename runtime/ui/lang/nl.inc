@@ -680,9 +680,6 @@
 {"Couldn't save", "Opslaan mislukt"},
 {"The game may say it saved, but it didn't. Your previous save is unchanged.", "Het spel zegt misschien dat er is opgeslagen, maar dat is niet zo. Je vorige opgeslagen spel is ongewijzigd."},
 {"Make sure this folder can be written to and the disk has free space:", "Controleer of er in deze map geschreven kan worden en of de schijf vrije ruimte heeft:"},
-{"Reset to vanilla?", "Terug naar origineel?"},
-{"This resets your settings to the vanilla game experience.\nYour controls stay as they are.", "Dit zet je instellingen terug naar het originele spel.\nJe besturing blijft zoals die is."},
-{"This also ends the current randomizer seed.\nIts save files are kept.", "Dit beëindigt ook de huidige randomizerseed.\nDe opslagbestanden ervan blijven bewaard."},
 {"Enter your name", "Voer je naam in"},
 {"Enter  confirm      Esc  cancel      (%d / %d)", "Enter  bevestigen      Esc  annuleren      (%d / %d)"},
 {"Video", "Beeld"},
@@ -710,7 +707,6 @@
 {"+1 Heart", "+1 hartje"},
 {"Secret Seashells", "Wonderschelpen"},
 // runtime/ui/plastic.mm
-{"Reset to vanilla", "Terug naar origineel"},
 // runtime/ui/race_overlay.mm
 {"SEED HASH", "SEEDHASH"},
 // runtime/ui/rando_tab.mm

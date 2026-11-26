@@ -680,9 +680,6 @@
 {"Couldn't save", "Sauvegarde impossible"},
 {"The game may say it saved, but it didn't. Your previous save is unchanged.", "Le jeu peut indiquer que la partie a été sauvegardée, mais ce n'est pas le cas. Ta sauvegarde précédente est intacte."},
 {"Make sure this folder can be written to and the disk has free space:", "Vérifie que ce dossier est accessible en écriture et que le disque a de l'espace libre :"},
-{"Reset to vanilla?", "Revenir au jeu d'origine ?"},
-{"This resets your settings to the vanilla game experience.\nYour controls stay as they are.", "Tes paramètres reviennent à l'expérience du jeu d'origine.\nTes commandes ne changent pas."},
-{"This also ends the current randomizer seed.\nIts save files are kept.", "Ça met aussi fin à la seed du randomizer en cours.\nSes sauvegardes sont conservées."},
 {"Enter your name", "Entre ton nom"},
 {"Enter  confirm      Esc  cancel      (%d / %d)", "Entrée  valider      Échap  annuler      (%d / %d)"},
 {"Video", "Vidéo"},
@@ -710,7 +707,6 @@
 {"+1 Heart", "+1 cœur"},
 {"Secret Seashells", "Coquillages"},
 // runtime/ui/plastic.mm
-{"Reset to vanilla", "Revenir au jeu d'origine"},
 // runtime/ui/race_overlay.mm
 {"SEED HASH", "HASH DE LA SEED"},
 // runtime/ui/rando_tab.mm

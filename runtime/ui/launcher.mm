@@ -981,7 +981,6 @@ static int g_refocus = MAIN;  // back on the main page: select the item of the p
 static bool g_menu_small;  // sub pages: buttons in the small font
 void menu_tabs_draw(float scale, ImFont *font, ImFont *font_big, bool in_game, void (*prelaunch)(float),
                     int only = -1000);  // menu.mm
-bool menu_reset_corner(float bx, float scale, ImFont *font, ImFont *font_big, bool seed);  // menu.mm
 void menu_bar_picture(float width, float scale);  // menu.mm
 void menu_style_begin(float scale);  // (menu.mm: the menu's look, until menu_style_end)
 bool menu_preview_frame(float scale, ImFont *font, ImFont *font_big);  // (menu.mm: true while a live preview is up)
@@ -2564,8 +2563,6 @@ extern "C" void launcher_run(const char *root) {
                 {  // close: the round X in the corner (B / Esc too)
                     float bx = 44 * sc;
                     back = plastic_close_corner(bx, sc);
-                    // (Settings: Reset to vanilla beside it, as in game)
-                    if (menu_reset_corner(bx, sc, g_font_small, g_font_menu, false)) settings_save();
                 }
                 bool popup = ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId);  // (before the pages run, like the menu)
                 menu_tabs_draw(sc, g_font_small, g_font_menu, false, prelaunch_tab);

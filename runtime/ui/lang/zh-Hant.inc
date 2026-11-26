@@ -680,9 +680,6 @@
 {"Couldn't save", "無法儲存"},
 {"The game may say it saved, but it didn't. Your previous save is unchanged.", "遊戲可能顯示已儲存，但實際上沒有儲存。你之前的存檔沒有變動。"},
 {"Make sure this folder can be written to and the disk has free space:", "請確認此資料夾可以寫入，且磁碟有可用空間："},
-{"Reset to vanilla?", "恢復為原版？"},
-{"This resets your settings to the vanilla game experience.\nYour controls stay as they are.", "這會將設定恢復為原版遊戲的體驗。\n操作設定會保持不變。"},
-{"This also ends the current randomizer seed.\nIts save files are kept.", "這也會結束目前的隨機化種子。\n種子的存檔會保留。"},
 {"Enter your name", "輸入名字"},
 {"Enter  confirm      Esc  cancel      (%d / %d)", "Enter  確定      Esc  取消      (%d / %d)"},
 {"Video", "影像"},
@@ -710,7 +707,6 @@
 {"+1 Heart", "+1顆心"},
 {"Secret Seashells", "秘密貝殼"},
 // runtime/ui/plastic.mm
-{"Reset to vanilla", "恢復為原版"},
 // runtime/ui/race_overlay.mm
 {"SEED HASH", "種子雜湊"},
 // runtime/ui/rando_tab.mm

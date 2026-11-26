@@ -680,9 +680,6 @@
 {"Couldn't save", "Speichern fehlgeschlagen"},
 {"The game may say it saved, but it didn't. Your previous save is unchanged.", "Das Spiel zeigt vielleicht an, dass gespeichert wurde, aber das stimmt nicht. Dein vorheriger Spielstand ist unverändert."},
 {"Make sure this folder can be written to and the disk has free space:", "Prüfe, ob in diesen Ordner geschrieben werden kann und ob auf dem Laufwerk Platz frei ist:"},
-{"Reset to vanilla?", "Auf Original zurücksetzen?"},
-{"This resets your settings to the vanilla game experience.\nYour controls stay as they are.", "Das setzt deine Einstellungen auf das Original-Spielerlebnis zurück.\nDeine Steuerung bleibt, wie sie ist."},
-{"This also ends the current randomizer seed.\nIts save files are kept.", "Das beendet auch den aktuellen Randomizer-Seed.\nSeine Spielstände bleiben erhalten."},
 {"Enter your name", "Gib deinen Namen ein"},
 {"Enter  confirm      Esc  cancel      (%d / %d)", "Enter  bestätigen      Esc  abbrechen      (%d / %d)"},
 {"Video", "Video"},
@@ -710,7 +707,6 @@
 {"+1 Heart", "+1 Herz"},
 {"Secret Seashells", "Zaubermuscheln"},
 // runtime/ui/plastic.mm
-{"Reset to vanilla", "Auf Original zurücksetzen"},
 // runtime/ui/race_overlay.mm
 {"SEED HASH", "SEED-HASH"},
 // runtime/ui/rando_tab.mm

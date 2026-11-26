@@ -680,9 +680,6 @@
 {"Couldn't save", "No se pudo guardar"},
 {"The game may say it saved, but it didn't. Your previous save is unchanged.", "Puede que el juego diga que guardó, pero no lo hizo. Tu partida guardada anterior no ha cambiado."},
 {"Make sure this folder can be written to and the disk has free space:", "Comprueba que se puede escribir en esta carpeta y que el disco tiene espacio libre:"},
-{"Reset to vanilla?", "¿Volver al juego original?"},
-{"This resets your settings to the vanilla game experience.\nYour controls stay as they are.", "Esto devuelve tus ajustes a la experiencia del juego original.\nTus controles se quedan como están."},
-{"This also ends the current randomizer seed.\nIts save files are kept.", "Esto también termina la semilla actual del randomizer.\nSus partidas se conservan."},
 {"Enter your name", "Escribe tu nombre"},
 {"Enter  confirm      Esc  cancel      (%d / %d)", "Enter  confirmar      Esc  cancelar      (%d / %d)"},
 {"Video", "Vídeo"},
@@ -710,7 +707,6 @@
 {"+1 Heart", "+1 corazón"},
 {"Secret Seashells", "Caracolas escondidas"},
 // runtime/ui/plastic.mm
-{"Reset to vanilla", "Volver al original"},
 // runtime/ui/race_overlay.mm
 {"SEED HASH", "HASH DE SEMILLA"},
 // runtime/ui/rando_tab.mm
