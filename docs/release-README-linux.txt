@@ -38,7 +38,8 @@ How to start
 RecompLauncher (https://recomplauncher.com) can set the game up and start it too, with this AppImage's
 recomplauncher.json.
 
-After an update of this program, or a graphics driver update, run --prepare again (it builds the shaders again).
+After an update of this program, or a graphics driver update, the game prepares its shaders again when it starts
+(about 15 minutes, once).
 
 At the online prompt, choose "Do Not Use": online features do not work.
 
@@ -72,7 +73,6 @@ If something goes wrong
 -----------------------
 - Attach game.log (and cache/shader_seen.txt for stutter) to an issue: it names your GPU and driver.
 - A message about Vulkan or the graphics driver: update your graphics driver and Mesa. The game needs Vulkan 1.3.
-- On AMD graphics cards the game may need the fix of pull request #21 in the repository, which this version may not have.
 - A message about AVX2: this CPU is too old for the game code.
 - The build failed: game.log in the data folder (the log of the run that failed) says why.
 
