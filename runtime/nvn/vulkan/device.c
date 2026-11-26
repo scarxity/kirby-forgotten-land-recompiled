@@ -737,7 +737,7 @@ static void create_device(void) {
     vkEnumerateDeviceExtensionProperties(g_vk.phys, NULL, &ne, NULL);
     VkExtensionProperties *ep = calloc(ne, sizeof *ep);
     vkEnumerateDeviceExtensionProperties(g_vk.phys, NULL, &ne, ep);
-    const char *ext[20];
+    const char *ext[24];
     uint32_t n_ext = 0;
     ext[n_ext++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
     g_vk.custom_border = has_ext(ep, ne, VK_EXT_CUSTOM_BORDER_COLOR_EXTENSION_NAME);
@@ -796,6 +796,8 @@ static void create_device(void) {
     // LARECOMP_VK_SHADER_STATS=1: each pipeline's statistics from the driver (registers, spills, cycles: tuning shaders)
     bool pexec_ext = getenv("LARECOMP_VK_SHADER_STATS") && atoi(getenv("LARECOMP_VK_SHADER_STATS")) &&
                      has_ext(ep, ne, VK_KHR_PIPELINE_EXECUTABLE_PROPERTIES_EXTENSION_NAME);
+    // LARECOMP_FRAMETIME_CSV (frametime.c): when each present reached the display
+    bool pw_ext = ft_wanted() && has_ext(ep, ne, VK_KHR_PRESENT_ID_EXTENSION_NAME) && has_ext(ep, ne, VK_KHR_PRESENT_WAIT_EXTENSION_NAME);
     free(ep);
 
     // features the backend relies on (all present on current desktop drivers)
@@ -810,6 +812,9 @@ static void create_device(void) {
     if (g_vk.divisor) have_div.pNext = have.pNext, have.pNext = &have_div;
     VkPhysicalDeviceFaultFeaturesEXT have_ff = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT};
     if (fault) have_ff.pNext = have.pNext, have.pNext = &have_ff;
+    VkPhysicalDevicePresentIdFeaturesKHR have_pid = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_FEATURES_KHR};
+    VkPhysicalDevicePresentWaitFeaturesKHR have_pw = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_WAIT_FEATURES_KHR, .pNext = &have_pid};
+    if (pw_ext) have_pid.pNext = have.pNext, have.pNext = &have_pw;
     VkPhysicalDeviceAddressBindingReportFeaturesEXT have_va = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ADDRESS_BINDING_REPORT_FEATURES_EXT};
     if (g_va_report) have_va.pNext = have.pNext, have.pNext = &have_va;
 #if defined(__linux__) && defined(VK_EXT_map_memory_placed)
@@ -1095,6 +1100,15 @@ static void create_device(void) {
     VkPhysicalDeviceAddressBindingReportFeaturesEXT en_va = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ADDRESS_BINDING_REPORT_FEATURES_EXT, .reportAddressBinding = VK_TRUE};
     if (g_va_report) en_va.pNext = f.pNext, f.pNext = &en_va;
+    pw_ext = pw_ext && have_pid.presentId && have_pw.presentWait;
+    VkPhysicalDevicePresentIdFeaturesKHR en_pid = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_FEATURES_KHR, .presentId = VK_TRUE};
+    VkPhysicalDevicePresentWaitFeaturesKHR en_pw = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_WAIT_FEATURES_KHR,
+                                                    .presentWait = VK_TRUE, .pNext = &en_pid};
+    if (pw_ext) {
+        en_pid.pNext = f.pNext, f.pNext = &en_pw;
+        ext[n_ext++] = VK_KHR_PRESENT_ID_EXTENSION_NAME;
+        ext[n_ext++] = VK_KHR_PRESENT_WAIT_EXTENSION_NAME;
+    }
     float prio = 1.0f;
     VkDeviceQueueCreateInfo qi = {.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, .queueFamilyIndex = g_vk.qfam,
                                   .queueCount = 1, .pQueuePriorities = &prio};
@@ -1105,6 +1119,7 @@ static void create_device(void) {
     volkLoadDevice(g_vk.dev);
 #endif
     vkGetDeviceQueue(g_vk.dev, g_vk.qfam, 0, &g_vk.queue);
+    ft_init(pw_ext);
     if (g_vk.vids) {
         g_vk.set_vertex_input = (PFN_vkCmdSetVertexInputEXT)vkGetDeviceProcAddr(g_vk.dev, "vkCmdSetVertexInputEXT");
         if (!g_vk.set_vertex_input) g_vk.vids = false;
@@ -1304,7 +1319,7 @@ static void create_swapchain(void) {
             LOG("[vk] window surface lost while making the swapchain (%d): made again at the next frame\n", r);
             for (uint32_t i = 0; i < g_vk.sc_count; i++) vkDestroyImageView(g_vk.dev, g_vk.sc_views[i], NULL);
             g_vk.sc_count = 0;
-            if (old) vkDestroySwapchainKHR(g_vk.dev, old, NULL);
+            if (old) ft_swapchain_gone(old), vkDestroySwapchainKHR(g_vk.dev, old, NULL);
             g_vk.swapchain = VK_NULL_HANDLE;
             return;
         }
@@ -1317,7 +1332,7 @@ static void create_swapchain(void) {
     LOG("[vk] swapchain %ux%u, %u images, %s\n", phys.width, phys.height, count,
         ci.presentMode < 4 ? modes[ci.presentMode] : "other present mode");
     for (uint32_t i = 0; i < g_vk.sc_count; i++) vkDestroyImageView(g_vk.dev, g_vk.sc_views[i], NULL);
-    if (old) vkDestroySwapchainKHR(g_vk.dev, old, NULL);
+    if (old) ft_swapchain_gone(old), vkDestroySwapchainKHR(g_vk.dev, old, NULL);
     g_vk.sc_format = sf.format;
     g_vk.sc_extent = ext;
     g_vk.sc_phys = phys;
@@ -1348,7 +1363,7 @@ static bool recreate_surface(void) {
     static unsigned misses;
     for (uint32_t i = 0; i < g_vk.sc_count; i++) vkDestroyImageView(g_vk.dev, g_vk.sc_views[i], NULL);
     g_vk.sc_count = 0;
-    if (g_vk.swapchain) vkDestroySwapchainKHR(g_vk.dev, g_vk.swapchain, NULL);
+    if (g_vk.swapchain) ft_swapchain_gone(g_vk.swapchain), vkDestroySwapchainKHR(g_vk.dev, g_vk.swapchain, NULL);
     g_vk.swapchain = VK_NULL_HANDLE;
     if (g_vk.surface) vkDestroySurfaceKHR(g_vk.inst, g_vk.surface, NULL);
     g_vk.surface = VK_NULL_HANDLE;
@@ -1622,6 +1637,8 @@ static void save_window_image(VkCommandBuffer cb, VkSpan *out) {
 }
 
 // End rendering into the window image and present it. shot_path: also save the window image as PNG.
+static bool ft_repeat;     // (the frame-time CSV's: the present being made shows a frame again)
+static uint64_t ft_frame;  // (... and its game frame)
 void vk_frame_end(const char *shot_path) {
     if (!cur_frame.ok) return;
     VkCommandBuffer cb = vk_cmd();
@@ -1635,7 +1652,8 @@ void vk_frame_end(const char *shot_path) {
     vk_submit_extra(cur_frame.acquired, done_sem[img], VK_NULL_HANDLE);
     // the present follows the submission in the recorder's order (its wait for the display is the recorder's, counted in
     // g_vk_frame_waits[2]; an out-of-date result makes the next vk_frame_begin recreate the swapchain)
-    rec_QueuePresentKHR(done_sem[img], g_vk.swapchain, img);
+    extern bool vk_ip_mid;
+    rec_QueuePresentKHR(done_sem[img], g_vk.swapchain, img, vk_ip_mid ? 1 : ft_repeat ? 2 : 0, ft_frame);
     cur_frame.ok = false;
     if (shot_path) {
         vk_wait_seq(seq);
@@ -1928,6 +1946,7 @@ void backend_present_now(NvnTexture *t, uint64_t frame) {
     if (pp_on) pp_t = SDL_GetTicksNS();
     TexBackend *b = vk_tex(t, true);
     b->presented = true;
+    ft_frame = frame, ft_repeat = rq_on() ? rq_present_is_repeat() : direct_repeat;
     vk_end_pass();
     // the frame's work goes to the GPU now, in a submission of its own: it starts while we wait for the window's image.
     // Its GPU time is counted, and the window image's submission's from after its wait (exec.c gpu_timer_add)

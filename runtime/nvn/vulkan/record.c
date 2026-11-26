@@ -608,16 +608,20 @@ void rec_QueueSubmit2(const VkSubmitInfo2 *si, uint64_t seq) {
     ENQ_END();
 }
 
-typedef struct { VkSemaphore wait; VkSwapchainKHR swapchain; uint32_t image; } PresentArgs;
+typedef struct { VkSemaphore wait; VkSwapchainKHR swapchain; uint32_t image; int kind; uint64_t frame; } PresentArgs;
 static void present_run(const void *p) {
     const PresentArgs *a = p;
     VkPresentInfoKHR pi = {.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, .waitSemaphoreCount = 1, .pWaitSemaphores = &a->wait,
                            .swapchainCount = 1, .pSwapchains = &a->swapchain, .pImageIndices = &a->image};
+    VkPresentIdKHR pid;
+    uint64_t id = 0;
+    ft_present_lock(&pi, &pid, &id);
     uint64_t t0 = NOW();
     rq_watch("vkQueuePresentKHR", a->image);
     VkResult r = vkQueuePresentKHR(g_vk.queue, &pi);
     rq_watch(NULL, 0);
     uint64_t dt = NOW() - t0;
+    ft_present_done(a->swapchain, id, a->kind, a->frame, t0, t0 + dt, r == VK_SUCCESS || r == VK_SUBOPTIMAL_KHR);
     __atomic_fetch_add(&g_vk_frame_waits[2], dt, __ATOMIC_RELAXED);
     if (dt > 250000000) {  // (FIFO waits for the display, a few ms; this long is a stall in the driver or the compositor)
         static int n;
@@ -643,8 +647,8 @@ static void present_run(const void *p) {
         pthread_mutex_unlock(&mu);
     }
 }
-void rec_QueuePresentKHR(VkSemaphore wait, VkSwapchainKHR swapchain, uint32_t image) {
-    PresentArgs a = {wait, swapchain, image};
+void rec_QueuePresentKHR(VkSemaphore wait, VkSwapchainKHR swapchain, uint32_t image, int kind, uint64_t frame) {
+    PresentArgs a = {wait, swapchain, image, kind, frame};
     presents_queued++;
     if (on <= 0) {  // (the wait is this thread's: idle for the pacer, as before)
         uint64_t t0 = NOW();

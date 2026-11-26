@@ -29,7 +29,14 @@ void rec_ResetCommandBuffer(VkCommandBuffer cb);  // (flags 0; its submission mu
 void rec_QueueSubmit2(const VkSubmitInfo2 *si, uint64_t seq);
 // vkQueuePresentKHR(image of swapchain, after wait). The result reaches rec_present_recreate(); the wait inside the
 // driver (FIFO: until the display) is the recorder's, counted in g_vk_frame_waits[2].
-void rec_QueuePresentKHR(VkSemaphore wait, VkSwapchainKHR swapchain, uint32_t image);
+// kind and frame: the frame-time CSV's (frametime.c: 0 the game's image, 1 an in-between, 2 a repeat; the game frame).
+void rec_QueuePresentKHR(VkSemaphore wait, VkSwapchainKHR swapchain, uint32_t image, int kind, uint64_t frame);
+// LARECOMP_FRAMETIME_CSV (frametime.c)
+bool ft_wanted(void);
+void ft_init(bool present_wait);
+void ft_present_lock(VkPresentInfoKHR *pi, VkPresentIdKHR *pid, uint64_t *id);
+void ft_present_done(VkSwapchainKHR sc, uint64_t id, int kind, uint64_t frame, uint64_t t_call, uint64_t t_ret, bool ok);
+void ft_swapchain_gone(VkSwapchainKHR sc);
 bool rec_present_recreate(void);  // (and clears it) the last present asked for a new swapchain (OUT_OF_DATE / SUBOPTIMAL)
 
 // ---- descriptor sets (the translating thread only)
