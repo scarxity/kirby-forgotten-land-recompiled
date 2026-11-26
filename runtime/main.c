@@ -17,6 +17,7 @@
 #include "setup_cli.h"
 #include "hle.h"
 #include "kernel.h"
+#include "nvn/shader_prep.h"
 
 const char *g_romfs_dir;
 
@@ -343,9 +344,9 @@ int main(int argc, char **argv) {
     bool skip_launcher = no_launcher || getenv("LARECOMP_INPUT");  // tests boot straight in
     if (getenv("LARECOMP_FORCE_LAUNCHER")) skip_launcher = false;  // (test: the start screen, then the scripted input)
     static char arg_root[4096], arg_kit[4096];  // (>= PATH_MAX: Bionic's fortified realpath checks it)
-    bool build_ios = false;
+    bool build_ios = false, play_arg = false;
     for (int i = 1; i < argc; i++) {
-        if (!strcmp(argv[i], "--play")) skip_launcher = true;
+        if (!strcmp(argv[i], "--play")) skip_launcher = true, play_arg = true;
         else if (!strcmp(argv[i], "--build-ios")) {  // <kit.laskit> [game files]: the iOS app, then exit
             build_ios = true;
             if (i + 1 < argc && !realpath(argv[++i], arg_kit)) snprintf(arg_kit, sizeof arg_kit, "%s", argv[i]);
@@ -368,6 +369,21 @@ int main(int argc, char **argv) {
     }
 #else
     if (build_ios) { fprintf(stderr, "the iOS export isn't in this build of LAS Recomp\n"); return 1; }
+#endif
+#ifndef __APPLE__
+    // --play, from any launcher (the Tauri one, RecompLauncher's start command, a shortcut): the shaders must be prepared
+    // for this exact runtime, game code, list, mods and GPU driver (runtime/shader_stamp.h), or the game builds them
+    // during play. When they aren't, they are prepared now, before the game boots, with a progress bar. Not for a test
+    // run (it boots straight in), and not for the preparation run itself (LARECOMP_SHADER_PREP: runtime/nvn/shader_prep.c).
+    const char *prep_env = getenv("LARECOMP_SHADER_PREP");
+    if (play_arg && !no_launcher && !getenv("LARECOMP_INPUT") && !(prep_env && atoi(prep_env))) {
+        char why[64];
+        if (shader_prep_needed(root, why, sizeof why)) {
+            LOG("[shader] not prepared for this runtime, game code, list, mods and GPU driver (%s): preparing them before the game starts\n", why);
+            extern bool launcher_prepare_run(const char *root);  // runtime/ui/launcher.mm
+            launcher_prepare_run(root);
+        }
+    }
 #endif
     for (bool title = !skip_launcher;;) {
         if (title && no_launcher) {

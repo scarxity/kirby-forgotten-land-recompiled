@@ -305,27 +305,55 @@ static bool has_ext(VkExtensionProperties *e, uint32_t n, const char *name) {
     return false;
 }
 
-// Discrete GPU first (LARECOMP_GPU=<index> picks one), needs Vulkan 1.3 and a queue that can present.
-static void pick_device(void) {
+static void gpu_identity(const VkPhysicalDeviceProperties *p, char *out, size_t n);
+// Discrete GPU first (LARECOMP_GPU=<index> picks one), needs Vulkan 1.3. game: the game's own pick (logged, fatal when
+// there is none); else the shader stamp's, which must name the same GPU (vk_gpu_identity).
+static VkPhysicalDevice choose_physical(VkInstance inst, bool game) {
     uint32_t n = 0;
-    vkEnumeratePhysicalDevices(g_vk.inst, &n, NULL);
-    if (!n) FATAL("no Vulkan device\n");
-    VkPhysicalDevice *pd = calloc(n, sizeof *pd);
-    vkEnumeratePhysicalDevices(g_vk.inst, &n, pd);
+    vkEnumeratePhysicalDevices(inst, &n, NULL);
+    if (!n && game) FATAL("no Vulkan device\n");
+    VkPhysicalDevice *pd = calloc(n ? n : 1, sizeof *pd);
+    vkEnumeratePhysicalDevices(inst, &n, pd);
     int want = getenv("LARECOMP_GPU") ? atoi(getenv("LARECOMP_GPU")) : -1, best = -1, best_score = -1;
     for (uint32_t i = 0; i < n; i++) {
         VkPhysicalDeviceProperties p;
         vkGetPhysicalDeviceProperties(pd[i], &p);
-        LOG("[vk] gpu %u: %s (api %u.%u.%u)\n", i, p.deviceName, VK_API_VERSION_MAJOR(p.apiVersion),
-            VK_API_VERSION_MINOR(p.apiVersion), VK_API_VERSION_PATCH(p.apiVersion));
+        if (game)
+            LOG("[vk] gpu %u: %s (api %u.%u.%u)\n", i, p.deviceName, VK_API_VERSION_MAJOR(p.apiVersion),
+                VK_API_VERSION_MINOR(p.apiVersion), VK_API_VERSION_PATCH(p.apiVersion));
         if (p.apiVersion < VK_API_VERSION_1_3) continue;
         int score = p.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU ? 3 : p.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU ? 2 : 1;
         if ((int)i == want) score = 100;
         if (score > best_score) { best_score = score; best = (int)i; }
     }
-    if (best < 0) FATAL("no Vulkan 1.3 device\n");
-    g_vk.phys = pd[best];
+    if (best < 0 && game) FATAL("no Vulkan 1.3 device\n");
+    VkPhysicalDevice chosen = best >= 0 ? pd[best] : VK_NULL_HANDLE;
     free(pd);
+    return chosen;
+}
+
+// The GPU the game will use, as the shader stamp names it, for a process with no window yet (--shaders-status:
+// runtime/setup_cli.c); in a running game, its own device. false: no usable Vulkan device.
+bool vk_gpu_identity(char *out, size_t n) {
+    if (g_vk.phys) return gpu_identity(&g_vk.props, out, n), true;
+#ifdef __ANDROID__
+    return false;
+#else
+    VkApplicationInfo app = {.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO, .apiVersion = VK_API_VERSION_1_3};
+    VkInstanceCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO, .pApplicationInfo = &app};
+    VkInstance inst;
+    if (vkCreateInstance(&ci, NULL, &inst) != VK_SUCCESS) return false;
+    VkPhysicalDevice phys = choose_physical(inst, false);
+    VkPhysicalDeviceProperties props;
+    if (phys) vkGetPhysicalDeviceProperties(phys, &props), gpu_identity(&props, out, n);
+    vkDestroyInstance(inst, NULL);
+    return phys != VK_NULL_HANDLE;
+#endif
+}
+
+// The device (choose_physical) and a queue that can present.
+static void pick_device(void) {
+    g_vk.phys = choose_physical(g_vk.inst, true);
     vkGetPhysicalDeviceProperties(g_vk.phys, &g_vk.props);
     uint32_t nq = 0;
     vkGetPhysicalDeviceQueueFamilyProperties(g_vk.phys, &nq, NULL);
@@ -414,11 +442,16 @@ void vk_log_memory(const char *why) {
 static size_t pcache_saved;  // bytes of the last save (or load)
 void vk_pipeline_cache_save(void);
 
+// The GPU and its driver as the shader caches and the shader stamp (runtime/shader_stamp.h) name them
+static void gpu_identity(const VkPhysicalDeviceProperties *p, char *out, size_t n) {
+    char uuid[2 * VK_UUID_SIZE + 1];
+    for (int i = 0; i < VK_UUID_SIZE; i++) snprintf(uuid + 2 * i, 3, "%02x", p->pipelineCacheUUID[i]);
+    snprintf(out, n, "%s, vendor %x device %x, driver %u, cache %s", p->deviceName, p->vendorID, p->deviceID, p->driverVersion, uuid);
+}
+
 static void pipeline_cache_tag(char *out, size_t n) {
-    char gpu[400], uuid[2 * VK_UUID_SIZE + 1];
-    for (int i = 0; i < VK_UUID_SIZE; i++) snprintf(uuid + 2 * i, 3, "%02x", g_vk.props.pipelineCacheUUID[i]);
-    snprintf(gpu, sizeof gpu, "%s, vendor %x device %x, driver %u, cache %s", g_vk.props.deviceName, g_vk.props.vendorID,
-             g_vk.props.deviceID, g_vk.props.driverVersion, uuid);
+    char gpu[400];
+    gpu_identity(&g_vk.props, gpu, sizeof gpu);
     shader_cache_tag(out, n, gpu);
 }
 

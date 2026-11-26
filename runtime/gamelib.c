@@ -54,15 +54,19 @@ static int candidates(const char *game_dir, char out[3][1100]) {
     return n;
 }
 
-bool gamelib_present(const char *game_dir) {
-    if (g_tables) return true;
+bool gamelib_path(const char *game_dir, char *out, size_t size) {
     char want[GAMELIB_FULL_ID_SIZE];
     if (!game_dir || !gamelib_full_id(game_dir, want, sizeof want)) return false;
     char c[3][1100];
     int n = candidates(game_dir, c);
     for (int i = 0; i < n; i++)
-        if (exists(c[i]) && id_matches(c[i], want)) return true;
+        if (exists(c[i]) && id_matches(c[i], want)) return snprintf(out, size, "%s", c[i]), true;
     return false;
+}
+
+bool gamelib_present(const char *game_dir) {
+    char path[1100];
+    return g_tables || gamelib_path(game_dir, path, sizeof path);
 }
 
 #ifdef __ANDROID__

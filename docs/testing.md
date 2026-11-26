@@ -69,6 +69,23 @@ those of 50 ms or more and the area-entry bursts. Each `[vk] frame held` log lin
 translated, compiled, pipelines built).
 0.3.2 measured on an RTX 3050 Laptop, first stage: holds of 50 ms or more 52 -> 9, the longest 1.4 s -> 0.13 s.
 
+## Shaders prepared before play, from any launcher
+
+`--play` prepares the shaders itself when the stamp (`cache/shaders-prepared.txt`, [launcher-runtime-contract.md](launcher-runtime-contract.md))
+does not match this runtime, game code, shipped list, mods and GPU driver. The rule is `tools/test_shader_stamp.c`
+(`make ci-test`, no game). End to end, on a copy of the work folder, hidden and muted, the way a player's start does it
+(no `LARECOMP_NO_LAUNCHER`, which marks a test run and skips the check):
+
+```sh
+export LARECOMP_NO_AUDIO=1 LARECOMP_HIDDEN=1
+<work>/build/ForgottenLandRecomp.exe --shaders-status           # prepare none
+<work>/build/ForgottenLandRecomp.exe extracted --play           # log: "[shader] not prepared ... (none)", "[shader] preparing: N%", stamp written, then the game boots
+<work>/build/ForgottenLandRecomp.exe --shaders-status           # ready
+<work>/build/ForgottenLandRecomp.exe extracted --play           # no "preparing" lines: boots at once
+sed -i 's/^gpu .*/gpu another driver/' <work>/cache/shaders-prepared.txt   # a driver change, as the stamp sees it
+<work>/build/ForgottenLandRecomp.exe --shaders-status           # prepare gpu
+```
+
 ## What no check proves
 
 That the game can be finished. The checks show that every stage's code, data and shaders work and that no known

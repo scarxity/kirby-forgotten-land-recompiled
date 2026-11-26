@@ -541,6 +541,9 @@ static std::atomic<uint64_t> g_prep_count{0};
 static void prep_progress(int done, int total) {
     g_prep_count = (uint64_t)(uint32_t)done << 32 | (uint32_t)total;
     g_prep_frac = total ? (float)done / (float)total : 0.0f;
+    static int logged = -1;  // (the log has the bar's progress, every 5%: a player's report and a hidden test run show it)
+    int pct = total ? (int)((int64_t)done * 100 / total) / 5 * 5 : -1;
+    if (pct > logged) logged = pct, fprintf(stderr, "[shader] preparing: %d%% (%d/%d)\n", pct, done, total);
 }
 static void prepare_shaders(bool background = false) {
     g_prep_skip = 0, g_prep_count = 0, g_prep_frac = 0;
@@ -3067,3 +3070,90 @@ extern "C" void launcher_run(const char *root) {
     g_bg = 0;
     g_start_screen = 0;
 }
+
+#ifndef __APPLE__
+// --play with the shaders not prepared for this exact runtime, game code, GPU driver, list and mods (runtime/main.c,
+// runtime/shader_stamp.h): a window with the same bar (and Skip) the setup shows, over the title movie's still, while
+// every program of the game files is prepared, then back to main(), which boots the game in this window. Skip leaves the
+// shaders unprepared (no stamp), so the next start asks again. The log has the progress, every 5%.
+extern "C" bool launcher_prepare_run(const char *root) {
+    g_root = root;
+    if (!check_game_files(g_root).empty()) return false;  // (not set up: the boot says what is missing)
+    ui_window_init();
+    SDL_Window *win = ui_window();
+    IMGUI_CHECKVERSION();
+    ImGuiContext *prev_ctx = ImGui::GetCurrentContext();
+    ImGuiContext *ctx = ImGui::CreateContext();
+    ImGui::SetCurrentContext(ctx);
+    ImGuiIO &io = ImGui::GetIO();
+    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_NavEnableGamepad;
+    io.IniFilename = NULL;
+    load_fonts();
+    ImGui_ImplSDL3_InitForVulkan(win);
+    vk_imgui_backend_init();
+    ImGui_ImplSDL3_SetGamepadMode(ImGui_ImplSDL3_GamepadMode_Manual, NULL, 0);
+    launcher_pad_open_all();
+    io.BackendFlags |= ImGuiBackendFlags_HasGamepad;
+    load_background(NULL);
+
+    shader_prep_set_full(true);
+    g_bg_prep = true;
+    pthread_t th;
+    pthread_create(&th, NULL, [](void *) -> void * { prepare_shaders(true); g_bg_prep = false; return NULL; }, NULL);
+    pthread_detach(th);
+    fprintf(stderr, "[launcher] preparing the shaders before the game starts\n");
+    uint64_t next_frame = 0;
+    while (g_bg_prep) {
+        SDL_Event e;
+        while (SDL_PollEvent(&e)) {
+            if (!launcher_pad_event(e)) ImGui_ImplSDL3_ProcessEvent(&e);
+            if (e.type == SDL_EVENT_QUIT) exit(0);
+        }
+        // one frame per refresh, as the start screen does (the swapchain presents without waiting)
+        const SDL_DisplayMode *dm = SDL_GetCurrentDisplayMode(SDL_GetDisplayForWindow(win));
+        uint64_t period = (uint64_t)(1e9 / (dm && dm->refresh_rate > 1 ? dm->refresh_rate : 60.0f)), now = plat_now_ns();
+        bool on_time = next_frame > now && next_frame - now <= period;
+        if (on_time) plat_sleep_until_ns(next_frame);
+        next_frame = (on_time ? next_frame : now) + period;
+        static const float clear_col[4] = {0.04f, 0.05f, 0.06f, 1};
+        if (!vk_frame_begin(clear_col)) { SDL_Delay(16); continue; }
+        ImGui_ImplVulkan_NewFrame();
+        ImGui_ImplSDL3_NewFrame();
+        if (SDL_HasGamepad()) io.BackendFlags |= ImGuiBackendFlags_HasGamepad;
+        ImGui::NewFrame();
+        ImVec2 ds = io.DisplaySize;
+        ImDrawList *bg = ImGui::GetBackgroundDrawList();
+        if (g_bg) {  // the title still, covering the window
+            float ia = (float)g_bg_w / g_bg_h, wa = ds.x / ds.y;
+            ImVec2 uv0(0, 0), uv1(1, 1);
+            if (wa > ia) { float v = ia / wa; uv0.y = (1 - v) / 2; uv1.y = 1 - uv0.y; }
+            else { float u = wa / ia; uv0.x = (1 - u) / 2; uv1.x = 1 - uv0.x; }
+            bg->AddImage(BG_TEXID, ImVec2(0, 0), ds, uv0, uv1);
+        } else {
+            bg->AddRectFilled(ImVec2(0, 0), ds, IM_COL32(40, 40, 40, 255));
+        }
+        draw_busy_overlay(ds, "", false, true);
+        ImGui::Render();
+        static const float no_uv[4] = {0, 0, 1, 1};
+        int pw, ph;
+        SDL_GetWindowSizeInPixels(win, &pw, &ph);
+        plastic_frame_begin_vk(NULL, no_uv, (float)pw, (float)ph, io.MousePos, ds.y / 1080.0f);
+        ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), (VkCommandBuffer)vk_frame_cmd());
+        const char *shot = getenv("LARECOMP_SHOT_PATH");  // (test: LARECOMP_LAUNCHER_SHOT=<frame> saves this screen and exits)
+        static long shot_at = getenv("LARECOMP_LAUNCHER_SHOT") ? atol(getenv("LARECOMP_LAUNCHER_SHOT")) : 0, frame = 0;
+        bool take = shot_at && ++frame == shot_at;
+        vk_frame_end(take ? shot ? shot : "build/launcher.png" : NULL);
+        if (take) exit(0);
+    }
+    shader_prep_set_full(false);  // (a later start screen's background preparation is the quick one)
+    fprintf(stderr, "[launcher] shader preparation %s: starting the game\n", g_prep_skip ? "skipped" : "done");
+    vk_imgui_backend_shutdown();
+    ImGui_ImplSDL3_Shutdown();
+    ImGui::DestroyContext(ctx);
+    ImGui::SetCurrentContext(prev_ctx);
+    g_bg = 0;
+    return !g_prep_skip;
+}
+#else
+extern "C" bool launcher_prepare_run(const char *) { return false; }
+#endif
