@@ -21,10 +21,16 @@ def pct(sorted_values, p):
     return sorted_values[max(0, math.ceil(len(sorted_values) * p / 100) - 1)]
 
 
-def log_counters(path):
+def log_counters(path, first, last):
     cuts, notmade = Counter(), Counter()
     draws = matched = binds = notfound = windows = 0
+    frame = 0
     for line in open(path, encoding="utf-8", errors="replace"):
+        m = re.match(r"\[vk\] t=[\d.]+ frame (\d+)", line)
+        if m:
+            frame = int(m.group(1))
+        if not first <= frame <= last:
+            continue
         m = re.search(r"\[interp\] \S+: [\d.]+ game frames/s, draws (\d+)/frame matched ([\d.]+)%", line)
         if m:
             windows += 1
@@ -35,13 +41,13 @@ def log_counters(path):
                     cuts[k.strip()] += int(v)
         m = re.search(r"\[interp\] presents .* frames without in-betweens:(.*)", line)
         if m:
-            for k, v in re.findall(r"([a-z][a-z ]*?) (\d+)", m.group(1)):
+            for k, v in re.findall(r"([a-zA-Z][a-zA-Z ]*?) (\d+)", m.group(1)):
                 notmade[k.strip()] += int(v)
         m = re.search(r"replay geometry: (\d+) binds .*, (\d+) not found", line)
         if m:
             binds += int(m.group(1))
             notfound += int(m.group(2))
-    print(f"log: {windows} stats windows; draws matched {100 * matched / max(draws, 1):.1f}%; "
+    print(f"log (same frames): {windows} stats windows; draws matched {100 * matched / max(draws, 1):.1f}%; "
           f"replay geometry binds not found {notfound}/{binds} ({100 * notfound / max(binds, 1):.1f}%)")
     print(f"  cuts: {dict(cuts)}")
     print(f"  frames without in-betweens: {dict(notmade)}")
@@ -53,7 +59,17 @@ def main():
     ap.add_argument("--log")
     ap.add_argument("--from-frame", type=int, default=0)
     ap.add_argument("--to-frame", type=int, default=1 << 62)
+    ap.add_argument("--from-event", help="with --log: start at the frame the input script anchored this event "
+                    "(\"[input] anchor @<event> at frame N\"), plus --from-frame")
+    ap.add_argument("--hz", type=float, help="the display's refresh rate: how many holds are whole refreshes (+-1 ms)")
     a = ap.parse_args()
+    if a.from_event:
+        anchors = [int(m.group(1)) for line in open(a.log, encoding="utf-8", errors="replace")
+                   for m in [re.search(r"\[input\] anchor @" + re.escape(a.from_event) + r" at frame (\d+)", line)] if m]
+        if not anchors:
+            ap.error(f"no anchor @{a.from_event} in the log")
+        a.from_frame += anchors[0]
+        print(f"from frame {a.from_frame} (@{a.from_event})")
     rows = [r for r in csv.DictReader(open(a.csv_path, newline="")) if a.from_frame <= int(r["present"]) <= a.to_frame]
     if len(rows) < 3:
         ap.error("fewer than 3 presents in the range")
@@ -71,6 +87,12 @@ def main():
     print(f"  hold ms: P1 {pct(h, 1):.2f} P5 {pct(h, 5):.2f} P50 {pct(h, 50):.2f} P95 {pct(h, 95):.2f} "
           f"P99 {pct(h, 99):.2f} max {h[-1]:.2f}; spread P95/P5 {pct(h, 95) / max(pct(h, 5), 0.01):.2f}; "
           f"over 50 ms {sum(x > 50 for x in holds)}")
+    if a.hz:
+        period = 1000 / a.hz
+        on_grid = sum(abs(x - round(x / period) * period) <= 1 for x in holds)
+        refreshes = Counter(max(1, round(x / period)) for x in holds)
+        print(f"  on the {a.hz:g} Hz refresh grid: {100 * on_grid / len(holds):.0f}% of holds; holds in refreshes: "
+              + ", ".join(f"{k}: {100 * n / len(holds):.0f}%" for k, n in sorted(refreshes.items())[:8]))
     # per game frame: its in-betweens' share of its time on screen (the frame's images: its mids, then its game image)
     frames, share, without = {}, [], 0
     for i, r in enumerate(rows[:-1]):
@@ -88,7 +110,7 @@ def main():
     print(f"  game frames {len(frames)}, without an in-between {without} ({100 * without / max(len(frames), 1):.1f}%)"
           + (f"; in-between share of the frame's screen time P5 {pct(s, 5):.2f} P50 {pct(s, 50):.2f} P95 {pct(s, 95):.2f}" if s else ""))
     if a.log:
-        log_counters(a.log)
+        log_counters(a.log, a.from_frame, a.to_frame)
 
 
 if __name__ == "__main__":
