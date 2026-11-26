@@ -6152,7 +6152,9 @@ static bool iv_find(uint64_t addr, uint64_t size, VkBuffer *buf, VkDeviceSize *o
             iv_binds++;
             return true;
         }
-    iv_missed++;
+    // (counted only for data iv_note copies: a static mesh has no copy and is read in place, as it should be)
+    extern int nvn_pool_flags_at(uint64_t addr);
+    iv_missed += size <= 65536 || (size <= (1u << 20) && (nvn_pool_flags_at(addr) & 0x13) == 0x12);
     return false;
 }
 
