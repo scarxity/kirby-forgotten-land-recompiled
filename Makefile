@@ -163,14 +163,16 @@ ifeq ($(ARCH),x86_64)
 GENARCH  ?= -march=x86-64-v3  # as on Windows: AVX2 + FMA for the lifted FP/SIMD code (checked at startup)
 endif
 GENFLAGS += $(GENARCH) -fPIC
-OSFLAGS  := -Wno-format  # (%llx for uint64_t, which is unsigned long here: the same size)
+# -DLARECOMP_ZSTD: shader_prep.c reads the game's .cmp shader files with zstd (without it the shader preparation finds 106 of
+# the game's 16,963 shaders, issue #8)
+OSFLAGS  := -Wno-format -DLARECOMP_ZSTD  # (%llx for uint64_t, which is unsigned long here: the same size)
 # shaderc as the system's pkg-config file names it (Arch / Fedora / AOSC ship only libshaderc_shared, issue #22);
 # without one -lshaderc (Debian / Ubuntu's libshaderc.so). SHADERC=... overrides it.
 SHADERC  ?= $(shell pkg-config --libs shaderc 2>/dev/null || echo -lshaderc)
 # -rdynamic: crash backtraces name host functions (runtime/platform/linux.c). DEPS: an rpath to its lib/ too, so the
 # game finds those libraries when run (the AppImage's own is set by tools/linux/package.sh)
 LDFLAGS  := -fuse-ld=lld -rdynamic $(if $(DEPS),-L$(DEPS)/lib -Wl$(comma)-rpath$(comma)$(abspath $(DEPS))/lib) \
-            -lSDL3 -lavformat -lavcodec -lavutil -lswscale -lvulkan $(SHADERC) -lpthread -ldl -lm
+            -lSDL3 -lavformat -lavcodec -lavutil -lswscale -lvulkan $(SHADERC) -l:libzstd.a -lpthread -ldl -lm
 BACKEND_SRC := $(wildcard runtime/nvn/vulkan/*.c) $(wildcard runtime/nvn/vulkan/*.cpp)
 BACKEND_OBJ := $(patsubst runtime/%.cpp,$(B)/rt/%.o,$(patsubst runtime/%.c,$(B)/rt/%.o,$(BACKEND_SRC)))
 IMGUI_OBJ += $(B)/imgui/imgui_impl_vulkan.o
