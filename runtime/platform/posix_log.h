@@ -1,5 +1,5 @@
-// macOS / Linux session log (included by macos.c and linux.c): lasrecomp.log in the data folder is always the latest
-// run; a new start moves the previous one aside as lasrecomp-backup-<YYYYMMDD-HHMMSS>-<pid>.log (its last write, the
+// macOS / Linux session log (included by macos.c and linux.c): game.log (GAME_LOG, game/game.h) in the data folder is
+// always the latest run; a new start moves the previous one aside as game-backup-<YYYYMMDD-HHMMSS>-<pid>.log (its last write, the
 // pid from its first line, 0 if unknown) and keeps the five newest of those, as on Windows. Moving instead of
 // truncating also means a copy still running or quitting keeps writing to its own (moved) file. Processes started by
 // this one (the start screen re-executing itself for the game) get LASRECOMP_LOG_APPEND and append to the same log.
@@ -12,6 +12,8 @@
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
+
+#include "../../game/game.h"
 
 #define SESSION_LOG_BACKUPS 5
 
@@ -29,9 +31,9 @@ static void session_log_backup(const char *dir, const char *name) {
     }
     char when[32];
     strftime(when, sizeof when, "%Y%m%d-%H%M%S", localtime(&st.st_mtime));
-    snprintf(to, sizeof to, "%s/lasrecomp-backup-%s-%d.log", dir, when, pid);
+    snprintf(to, sizeof to, "%s/" GAME_LOG "-backup-%s-%d.log", dir, when, pid);
     for (int i = 1; access(to, F_OK) == 0 && i < 100; i++)  // (never replace another backup)
-        snprintf(to, sizeof to, "%s/lasrecomp-backup-%s-%d-%d.log", dir, when, pid, i);
+        snprintf(to, sizeof to, "%s/" GAME_LOG "-backup-%s-%d-%d.log", dir, when, pid, i);
     rename(from, to);
 }
 
@@ -50,7 +52,7 @@ static void session_log_prune(const char *dir) {
     char path[1400];
     for (struct dirent *e; (e = readdir(d));) {
         size_t len = strlen(e->d_name);
-        if (strncmp(e->d_name, "lasrecomp-backup-", 17) || len < 22 || len >= sizeof logs->name ||
+        if (strncmp(e->d_name, GAME_LOG "-backup-", sizeof GAME_LOG "-backup-" - 1) || len < 22 || len >= sizeof logs->name ||
             strcmp(e->d_name + len - 4, ".log")) continue;
         struct stat st;
         snprintf(path, sizeof path, "%s/%s", dir, e->d_name);
@@ -72,18 +74,21 @@ static void session_log_prune(const char *dir) {
     free(logs);
 }
 
-// stdout / stderr -> <dir>/lasrecomp.log (path_out: its path, emptied on failure).
+// stdout / stderr -> <dir>/game.log (path_out: its path, emptied on failure).
 static void session_log_open(const char *dir, char *path_out, size_t n) {
-    snprintf(path_out, n, "%s/lasrecomp.log", dir);
+    snprintf(path_out, n, "%s/" GAME_LOG ".log", dir);
     bool append = getenv("LASRECOMP_LOG_APPEND") != NULL;
     if (!append) {
         session_log_backup(dir, "lasrecomp.prev.log");  // (the earlier macOS scheme's one backup)
-        session_log_backup(dir, "lasrecomp.log");
+        session_log_backup(dir, GAME_LOG ".log");
         session_log_prune(dir);
     }
+    // (a launcher's command, setup_cli.c: its answer is on stdout, which stays what the launcher gave it)
+    bool keep_stdout = getenv("LARECOMP_CLI_STDOUT") != NULL;
+    unsetenv("LARECOMP_CLI_STDOUT");
     if (!freopen(path_out, "a", stderr)) { path_out[0] = 0; return; }
     setvbuf(stderr, NULL, _IONBF, 0);
-    dup2(STDERR_FILENO, STDOUT_FILENO);
+    if (!keep_stdout) dup2(STDERR_FILENO, STDOUT_FILENO);
     setenv("LASRECOMP_LOG_APPEND", "1", 1);
     // (a first line: an empty log then means writing failed - e.g. a full disk - not another start; its pid names
     // the backup later)

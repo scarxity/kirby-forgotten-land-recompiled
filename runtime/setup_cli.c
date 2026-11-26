@@ -52,6 +52,9 @@ bool setup_cli_parse(int argc, char **argv) {
         }
     }
     if (!g_cmd[0]) return false;
+#ifndef _WIN32
+    setenv("LARECOMP_CLI_STDOUT", "1", 1);  // (macOS, Linux: no session log over stdout, platform/posix_log.h)
+#endif
 #ifdef _WIN32
     // (a GUI-subsystem process started with no stderr would get a session log that takes stdout too: plat_init)
     HANDLE err = GetStdHandle(STD_ERROR_HANDLE);
