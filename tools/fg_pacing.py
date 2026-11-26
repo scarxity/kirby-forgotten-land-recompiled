@@ -61,15 +61,21 @@ def main():
     ap.add_argument("--to-frame", type=int, default=1 << 62)
     ap.add_argument("--from-event", help="with --log: start at the frame the input script anchored this event "
                     "(\"[input] anchor @<event> at frame N\"), plus --from-frame")
+    ap.add_argument("--to-event", help="with --log: end at the frame the input script anchored this event")
     ap.add_argument("--hz", type=float, help="the display's refresh rate: how many holds are whole refreshes (+-1 ms)")
     a = ap.parse_args()
+    def anchor(event):
+        frames = [int(m.group(1)) for line in open(a.log, encoding="utf-8", errors="replace")
+                  for m in [re.search(r"\[input\] anchor @" + re.escape(event) + r" at frame (\d+)", line)] if m]
+        if not frames:
+            ap.error(f"no anchor @{event} in the log: the run did not reach it")
+        return frames[0]
     if a.from_event:
-        anchors = [int(m.group(1)) for line in open(a.log, encoding="utf-8", errors="replace")
-                   for m in [re.search(r"\[input\] anchor @" + re.escape(a.from_event) + r" at frame (\d+)", line)] if m]
-        if not anchors:
-            ap.error(f"no anchor @{a.from_event} in the log")
-        a.from_frame += anchors[0]
-        print(f"from frame {a.from_frame} (@{a.from_event})")
+        a.from_frame += anchor(a.from_event)
+    if a.to_event:
+        a.to_frame = anchor(a.to_event)
+    if a.from_event or a.to_event:
+        print(f"frames {a.from_frame} to {a.to_frame} (@{a.from_event} .. @{a.to_event})")
     rows = [r for r in csv.DictReader(open(a.csv_path, newline="")) if a.from_frame <= int(r["present"]) <= a.to_frame]
     if len(rows) < 3:
         ap.error("fewer than 3 presents in the range")
