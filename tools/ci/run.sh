@@ -70,6 +70,7 @@ suite_engine() {
     t audio_fx 'clang -O2 tools/test_audio_fx.c -o build/test-audio-fx.exe && build/test-audio-fx.exe'
     t crash_explain 'clang -std=gnu11 -O1 tools/test_crash_explain.c -o build/test-crash-explain.exe && build/test-crash-explain.exe'
     t mods 'clang -std=gnu11 -O1 tools/test_mods.c runtime/mods.c -o build/test-mods.exe && build/test-mods.exe'
+    t shader_stamp 'clang -std=gnu11 -O1 tools/test_shader_stamp.c runtime/shader_stamp.c -o build/test-shader-stamp.exe && build/test-shader-stamp.exe'
     # (GLSL only: the script's MSL comparison needs a reference commit; REF=HEAD satisfies it, the GLSL half is the check)
     t translate_glsl 'REF=HEAD tools/test_translate.sh 4000 "$(nproc)" glsl'
     t translate_ops 'tools/test_translate_ops.sh'
