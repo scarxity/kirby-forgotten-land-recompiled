@@ -157,7 +157,7 @@ GAMELIB  := $(B)/lasgame.dylib
 GAMELIB_LDFLAGS := -dynamiclib -undefined dynamic_lookup -install_name @rpath/LASGame.framework/LASGame
 GAMELIB_SHARED :=  # (never built on the device)
 else ifeq ($(PLATFORM),linux)
-EXE      := $(B)/lasrecomp
+EXE      := $(B)/$(EXE_NAME)
 DEPINC   := $(if $(DEPS),-I$(DEPS)/include)
 ifeq ($(ARCH),x86_64)
 GENARCH  ?= -march=x86-64-v3  # as on Windows: AVX2 + FMA for the lifted FP/SIMD code (checked at startup)

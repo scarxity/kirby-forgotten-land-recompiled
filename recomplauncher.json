@@ -9,13 +9,14 @@
     "check": { "nup_build_id": "d9ba7db72ffafecd07f5f5535dec05734e59bce1" }
   },
   "prepare": {
-    "program": ["ForgottenLandRecomp.exe"],
+    "program": ["ForgottenLandRecomp.exe", "ForgottenLandRecomp.AppImage"],
     "args": ["--prepare", "{game}"],
+    "env": { "LARECOMP_DATA_ROOT": "{install}" },
     "label": "Translating the game code from your copy and compiling it for this PC. About 7 minutes on a 16-thread PC. Your game files are linked into this folder when they are on the same drive, and copied (about 6 GB) when they are not.",
     "timeout": 7200
   },
   "start": {
-    "program": ["ForgottenLandRecomp.exe"],
+    "program": ["ForgottenLandRecomp.exe", "ForgottenLandRecomp.AppImage"],
     "args": ["extracted", "--play"],
     "env": { "LARECOMP_DATA_ROOT": "{install}" }
   },
