@@ -89,7 +89,10 @@ void ft_present_done(VkSwapchainKHR sc, uint64_t id, int kind, uint64_t frame, u
     if (!t_first) t_first = t_call;
     FtRow r = {ok ? sc : VK_NULL_HANDLE, id, frame, t_call, t_ret, kind};
     if (!waiting) write_row(&r, -1);
-    else if (q_head - q_tail < FT_Q) q[q_head++ % FT_Q] = r;
+    else {
+        if (q_head - q_tail == FT_Q) write_row(&q[q_tail++ % FT_Q], -1);  // (full: the oldest goes without its shown time)
+        q[q_head++ % FT_Q] = r;
+    }
     pthread_mutex_unlock(&lock);
 }
 // Before a swapchain is destroyed: its pending rows are written without a shown time.
