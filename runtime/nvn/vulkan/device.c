@@ -1832,7 +1832,26 @@ static void ip_log(void) {
     memset(ip_not_made, 0, sizeof ip_not_made);
     ip_log_last = now;
 }
-static void ip_present_mid(TexBackend *b) {  // an in-between in b (the game's image), placed as the last image
+// LARECOMP_INTERP_SHOTS=<frame>,... (tests): the window images around each of those game frames - the frame before's
+// image, the frame's in-betweens and its own image - as <LARECOMP_INTERP_SHOT_DIR (default build/interp-shots)>/
+// f<frame>_a_prev.png, _b_mid<m>.png, _c_game.png. what: 0 the frame's image, m > 0 its in-between m.
+static const char *ip_shot(uint64_t frame, int what) {
+    const char *e = getenv("LARECOMP_INTERP_SHOTS");
+    if (!e) return NULL;
+    const char *dir = getenv("LARECOMP_INTERP_SHOT_DIR") ? getenv("LARECOMP_INTERP_SHOT_DIR") : "build/interp-shots";
+    static char path[300];
+    for (const char *p = e; *p;) {
+        uint64_t f = strtoull(p, (char **)&p, 10);
+        mkdir(dir, 0755);
+        if (f == frame && what > 0) return snprintf(path, sizeof path, "%s/f%llu_b_mid%d.png", dir, (unsigned long long)f, what), path;
+        if (f == frame) return snprintf(path, sizeof path, "%s/f%llu_c_game.png", dir, (unsigned long long)f), path;
+        if (f == frame + 1 && !what) return snprintf(path, sizeof path, "%s/f%llu_a_prev.png", dir, (unsigned long long)f), path;
+        if (*p != ',') break;
+        p++;
+    }
+    return NULL;
+}
+static void ip_present_mid(TexBackend *b, int m) {  // in-between m in b (the game's image), placed as the last image
     static const float black[4] = {0, 0, 0, 1};
     extern bool vk_ip_mid;  // (exec.c: its GPU time is the in-between's)
     vk_ip_mid = true;
@@ -1841,7 +1860,7 @@ static void ip_present_mid(TexBackend *b) {  // an in-between in b (the game's i
         vk_present_draw(cb, b, ip_place.vx, ip_place.vy, ip_place.vw, ip_place.vh, ip_place.pv);
         menu_render((void *)cb, g_vk.sc_extent.width, g_vk.sc_extent.height);
         ip_space();
-        vk_frame_end(NULL);
+        vk_frame_end(ip_shot(ft_frame, m));
     }
     vk_ip_mid = false;
 }
@@ -1929,7 +1948,7 @@ static int ip_mids(TexBackend *b, uint64_t frame) {  // (the in-betweens shown)
         for (int m = 1; m <= allowed; m++) {
             if (!interp_prepare((float)m / (float)(allowed + 1))) break;
             renderer_interp_replay();
-            ip_present_mid(b);
+            ip_present_mid(b, m);
             made++;
         }
         ip_hold(b, true);
@@ -2056,7 +2075,8 @@ void backend_present_now(NvnTexture *t, uint64_t frame) {
         ip_space();
         // LARECOMP_SHOT_PATH: where (tools/shot.sh: each SHOT_ID run its own, as metal.m; default build/window.png)
         const char *win_path = getenv("LARECOMP_SHOT_PATH") ? getenv("LARECOMP_SHOT_PATH") : "build/window.png";
-        vk_frame_end(shot ? win_path : req[0] ? req : NULL);
+        const char *ips = ip_shot(frame, 0);
+        vk_frame_end(shot ? win_path : req[0] ? req : ips);
         if (shot && getenv("LARECOMP_EXIT_AFTER_SHOT")) exit_after_shot();
     } else {
         renderer_submit();
