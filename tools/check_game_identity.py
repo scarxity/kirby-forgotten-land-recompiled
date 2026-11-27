@@ -83,8 +83,8 @@ def check(root):
     man = json.loads(read(root, 'recomplauncher.json'))
     eq('recomplauncher.json name', man['name'], src['name'])
     eq('recomplauncher.json repo', man['repo'], src['repo'])
-    eq('recomplauncher.json prepare program', man['prepare']['program'], [exe])
-    eq('recomplauncher.json start program', man['start']['program'], [exe])
+    eq('recomplauncher.json prepare program', man['prepare']['program'], [exe, src['exe'] + '.AppImage'])
+    eq('recomplauncher.json start program', man['start']['program'], [exe, src['exe'] + '.AppImage'])
     if man['game']['check']['nup_build_id'].lower() not in src['build_ids']:
         errors.append(f'recomplauncher.json nup_build_id {man["game"]["check"]["nup_build_id"]} is not in versions.h {src["build_ids"]}')
     missing = [c for c in map(str, range(8, 16)) if c not in man['exit_codes']]

@@ -220,7 +220,7 @@
 {"Switch", "Switch"},
 {"Xbox / PlayStation", "Xbox / PlayStation"},
 {"Button layout", "Раскладка кнопок"},
-{"Switch keeps the Switch's button positions, so the right button confirms. Xbox / PlayStation swaps the bottom and right buttons, so the bottom button confirms, as on those controllers. Applies to the game and LAS Recomp's menus. Nintendo controllers aren't affected.", "«Switch» сохраняет расположение кнопок Switch: подтверждает правая кнопка. «Xbox / PlayStation» меняет местами нижнюю и правую кнопки: подтверждает нижняя, как на этих контроллерах. Действует в игре и в меню LAS Recomp. Контроллеры Nintendo не затрагиваются."},
+{"Switch keeps the Switch's button positions, so the right button confirms. Xbox / PlayStation swaps the bottom and right buttons, so the bottom button confirms, as on those controllers. Applies to the game and the recomp's menus. Nintendo controllers aren't affected.", "«Switch» сохраняет расположение кнопок Switch: подтверждает правая кнопка. «Xbox / PlayStation» меняет местами нижнюю и правую кнопки: подтверждает нижняя, как на этих контроллерах. Действует в игре и в меню этой рекомпиляции. Контроллеры Nintendo не затрагиваются."},
 {"Display", "Экран"},
 {"Appearance", "Внешний вид"},
 {"Layout", "Расположение"},
@@ -440,10 +440,6 @@
 {"Not recognized: %d.", "Не распознано: %d."},
 {"They load the next time you start the game.", "Они загрузятся при следующем запуске игры."},
 {"Imported fonts removed. You're back on the substitute fonts.", "Импортированные шрифты удалены. Снова используются шрифты-заменители."},
-{"How would you like to play?", "Как вы хотите играть?"},
-{"You can change this any time in Settings.", "Это можно изменить в любой момент в настройках."},
-{"Original 16:9", "Оригинал 16:9"},
-{"Unlocked, fill the screen", "Без ограничений, на весь экран"},
 {"Home button", "кнопку HOME"},
 {"Xbox button", "кнопку Xbox"},
 {"PlayStation button", "кнопку PlayStation"},
@@ -563,10 +559,6 @@
 // runtime/ui/menu.mm
 {"Restart required", "Нужен перезапуск"},
 {"The Metal HUD shows after you restart the game.", "Metal HUD появится после перезапуска игры."},
-{"Unlocked", "Без ограничений"},
-{"Configure the shape of the picture. Unlocked fills the window, Original keeps 16:9.", "Задаёт форму картинки. «Без ограничений» заполняет окно, «Оригинал 16:9» оставляет 16:9."},
-{"Aspect ratio", "Соотношение сторон"},
-{"Unlocked fills the window and shows more of the island on wide screens, up to ultrawide. Original keeps the game's 16:9 view with bars.", "«Без ограничений» заполняет окно и показывает больше острова на широких экранах, вплоть до сверхшироких. «Оригинал» сохраняет вид 16:9 с полосами по краям."},
 {"Fullscreen", "Полноэкранный режим"},
 {"Fills the screen. You can also press F11, Alt+Enter or Cmd+Ctrl+F.", "Игра на весь экран. Также можно нажать F11, Alt+Enter или Cmd+Ctrl+F."},
 {"Top left", "Вверху слева"},
@@ -688,9 +680,6 @@
 {"Couldn't save", "Не удалось сохранить"},
 {"The game may say it saved, but it didn't. Your previous save is unchanged.", "Игра может сообщить, что сохранение прошло, но это не так. Предыдущее сохранение не изменилось."},
 {"Make sure this folder can be written to and the disk has free space:", "Убедитесь, что в эту папку можно записывать и на диске есть свободное место:"},
-{"Reset to vanilla?", "Вернуть оригинал?"},
-{"This resets your settings to the vanilla game experience.\nYour controls stay as they are.", "Настройки вернутся к оригинальной игре.\nУправление останется как есть."},
-{"This also ends the current randomizer seed.\nIts save files are kept.", "Также завершится текущий сид рандомайзера.\nЕго сохранения останутся."},
 {"Enter your name", "Введите имя"},
 {"Enter  confirm      Esc  cancel      (%d / %d)", "Enter  подтвердить      Esc  отмена      (%d / %d)"},
 {"Video", "Видео"},
@@ -718,7 +707,6 @@
 {"+1 Heart", "+1 сердце"},
 {"Secret Seashells", "Редкие ракушки"},
 // runtime/ui/plastic.mm
-{"Reset to vanilla", "Вернуть оригинал"},
 // runtime/ui/race_overlay.mm
 {"SEED HASH", "ХЕШ СИДА"},
 // runtime/ui/rando_tab.mm

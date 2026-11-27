@@ -48,7 +48,6 @@ int main(int argc, char **argv) {
     settings_load();
     assert(!g_settings.upscaler_auto);
     assert(!strcmp(settings_language(), argv[1]));
-    assert(g_settings.aspect == ASPECT_ORIGINAL);
     assert(g_settings.upscaler == UPSCALE_BILINEAR);
     assert(g_settings.prompts == PROMPTS_XBOX);
     assert(g_settings.volume == 1.25f);

@@ -662,11 +662,6 @@ static void tab_display(void) {
     float scale = ImGui::GetFontSize() / 34;
     opt_begin("##video", scale);
     opt_section("Display");
-    const char *aspects[] = {LN("Unlocked"), LN("Original 16:9")};
-    preview_text(LN("Configure the shape of the picture. Unlocked fills the window, Original keeps 16:9."), NULL);
-    opt_preview("Aspect ratio", &g_settings.aspect, aspects, 2, ASPECT_ORIGINAL,
-               "Unlocked fills the window and shows more of the island on wide screens, up to ultrawide. Original keeps "
-               "the game's 16:9 view with bars.");
     bool fs = g_settings.fullscreen;
     if (!PLAT_TOUCH && opt_toggle("Fullscreen", &fs, false, "Fills the screen. You can also press F11, Alt+Enter or Cmd+Ctrl+F.")) {
         g_settings.fullscreen = fs;
@@ -871,7 +866,7 @@ static void tab_audio(void) {
 
 extern "C" void rt_request_reboot(int kind);  // runtime/main.c (rt.h's RT_REBOOT_GAME / RT_REBOOT_TITLE)
 
-// Reset and Quit (the bar's entries): a question over the bar, as Reset to vanilla's (user 2026-11-03). Reset: the game
+// Reset and Quit (the bar's entries): a question over the bar (user 2026-11-03). Reset: the game
 // boots again (the intro movie). Quit: the game closes (the launcher that started it is still open). B / Esc is
 // Cancel, where the cursor starts.
 static void ask_popup(float scale) {
@@ -979,59 +974,6 @@ static void notice_popup(float scale) {
     }
     ImGui::EndPopup();
 }
-
-// Reset to vanilla (the round arrow beside the close X): the game as Nintendo made it - 16:9; Video / Audio otherwise
-// and the controls stay.
-static void reset_to_vanilla(bool in_game) {
-    Settings &s = g_settings;
-    s.aspect = ASPECT_ORIGINAL;
-    LOG("[menu] reset to vanilla%s\n", !in_game ? " (start screen)" : "");
-    settings_save();
-}
-
-// seed: a seed would be left (the one being played, or on the start screen the one PLAY would start). True when Reset
-// was pressed.
-static bool vanilla_popup(float scale, bool seed, bool in_game) {
-    // LARECOMP_MENU_VANILLA=ask / reset / cancel (test): the question opens with the menu; reset / cancel press that
-    // button a few frames later
-    static const char *test = getenv("LARECOMP_MENU_VANILLA");
-    static int test_frames;
-    if (test && !test_frames++) ImGui::OpenPopup("##vanilla");
-    bool test_reset = test && test_frames == 30 && !strcmp(test, "reset");
-    bool test_cancel = test && test_frames == 30 && !strcmp(test, "cancel");
-    if (!ImGui::BeginPopupModal("##vanilla", NULL, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar))
-        return false;
-    ImGui::PushFont(g_font_big);
-    ImGui::TextColored(plastic_col(plastic_theme().title), "%s", L("Reset to vanilla?"));
-    ImGui::PopFont();
-    ImGui::Spacing();
-    ImGui::TextUnformatted(L("This resets your settings to the vanilla game experience.\nYour controls stay as they are."));
-    if (seed) {
-        ImGui::Spacing();
-        ImGui::TextUnformatted(L("This also ends the current randomizer seed.\nIts save files are kept."));
-    }
-    ImGui::Spacing();
-    ImGui::Spacing();
-    ImVec2 bs(220 * scale, 0);
-    for (const char *s : {L("Reset"), L("Cancel")})
-        bs.x = fmaxf(bs.x, ImGui::CalcTextSize(s).x + 2 * ImGui::GetStyle().FramePadding.x + 16 * scale);
-    bool reset = false;
-    if (ImGui::Button(L("Reset"), bs) || test_reset) {
-        ImGui::CloseCurrentPopup();
-        reset_to_vanilla(in_game);
-        reset = true;
-    }
-    ImGui::SameLine();
-    ImGui::SetItemDefaultFocus();
-    if (ImGui::Button(L("Cancel"), bs) || ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) ||
-        ImGui::IsKeyPressed(ImGuiKey_Escape, false) || test_cancel) {
-        LOG("[menu] reset to vanilla cancelled\n");
-        ImGui::CloseCurrentPopup();
-    }
-    ImGui::EndPopup();
-    return reset;
-}
-
 
 // ---- reusing the overlay's last drawing (LARECOMP_OVERLAY_CACHE=0: off, a new ImGui frame every present as before)
 // While only the FPS counter and / or the run timer are up (no menu, no input, nothing interactive or animated), the
@@ -1529,22 +1471,6 @@ void menu_tabs_draw(float scale, ImFont *font, ImFont *font_big, bool in_game, v
     tabs_body(scale, in_game, prelaunch, only);
     ImGui::GetStyle() = saved;
     g_font = f0, g_font_big = f1;
-}
-
-// The start screen's Settings: Reset to vanilla beside its close X, as in game (user 2026-11-11). seed: PLAY would
-// start a seed. True when Reset was pressed (the caller drops that seed: nothing is running to reboot).
-bool menu_reset_corner(float bx, float scale, ImFont *font, ImFont *font_big, bool seed) {
-    ImFont *f0 = g_font, *f1 = g_font_big;
-    g_font = font, g_font_big = font_big;
-    ImGuiStyle saved = ImGui::GetStyle();  // (the question in the menu's look, as menu_tabs_draw's pages)
-    style_init();
-    style_parchment(ImGui::GetStyle());
-    ImGui::GetStyle().ScaleAllSizes(scale);
-    if (plastic_reset_corner(bx, scale)) ImGui::OpenPopup("##vanilla");
-    bool r = vanilla_popup(scale, seed, false);
-    ImGui::GetStyle() = saved;
-    g_font = f0, g_font_big = f1;
-    return r;
 }
 
 // The menu bar (in game; its window is drawn in the menu's font), only while no page is open: left / right (d-pad,
@@ -2069,10 +1995,6 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
             {
                 float bx = 44 * scale;
                 if (!(PLAT_TOUCH && pane_x) && plastic_close_corner(bx, scale)) back = true;
-                if (page == BAR_SETTINGS) {
-                    if (plastic_reset_corner(bx, scale)) ImGui::OpenPopup("##vanilla");
-                    vanilla_popup(scale, false, true);
-                }
             }
 
             bool any_popup = ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId), typing = ui_text_busy();  // (before

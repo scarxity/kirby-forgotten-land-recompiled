@@ -139,8 +139,8 @@ static void exit_after_shot(void);  // (UI thread section)
 
 // ================================================================== instance / device
 // What a faulting GPU address belonged to (vk_device_fault_report). The driver reports every GPU address range it binds
-// and unbinds (VK_EXT_device_address_binding_report): the large ones (the guest heap import, VMA blocks) are kept while
-// bound, the latest 4096 of any size in a ring, so a fault in memory freed a moment ago is named too.
+// and unbinds (VK_EXT_device_address_binding_report): the large memory objects (the guest heap import, VMA blocks) are
+// kept while bound, the latest 4096 of any size in a ring, so a fault in memory freed a moment ago is named too.
 typedef struct { uint64_t base, size, handle; uint32_t objtype; bool unbind; } VaEvent;
 static VaEvent va_ring[4096], va_big[64];
 static uint64_t va_n;
@@ -158,7 +158,9 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL va_cb(VkDebugUtilsMessageSeverityFlagBitsE
                  d->objectCount ? (uint32_t)d->pObjects[0].objectType : 0, b->bindingType == VK_DEVICE_ADDRESS_BINDING_TYPE_UNBIND_EXT};
     pthread_mutex_lock(&va_lk);
     va_ring[va_n++ % 4096] = e;
-    if (e.size >= (64u << 20)) {
+    // (memory objects only: NVIDIA reports each image or buffer bound into a VMA block with the whole block's range, so
+    // a stage's images filled the 64 entries in seconds and no memory bound after them could be named)
+    if (e.objtype == VK_OBJECT_TYPE_DEVICE_MEMORY && e.size >= (64u << 20)) {
         int i = 0;
         while (i < va_nbig && !(va_big[i].base == e.base && va_big[i].handle == e.handle)) i++;
         if (e.unbind && i < va_nbig) va_big[i] = va_big[--va_nbig];
@@ -305,27 +307,55 @@ static bool has_ext(VkExtensionProperties *e, uint32_t n, const char *name) {
     return false;
 }
 
-// Discrete GPU first (LARECOMP_GPU=<index> picks one), needs Vulkan 1.3 and a queue that can present.
-static void pick_device(void) {
+static void gpu_identity(const VkPhysicalDeviceProperties *p, char *out, size_t n);
+// Discrete GPU first (LARECOMP_GPU=<index> picks one), needs Vulkan 1.3. game: the game's own pick (logged, fatal when
+// there is none); else the shader stamp's, which must name the same GPU (vk_gpu_identity).
+static VkPhysicalDevice choose_physical(VkInstance inst, bool game) {
     uint32_t n = 0;
-    vkEnumeratePhysicalDevices(g_vk.inst, &n, NULL);
-    if (!n) FATAL("no Vulkan device\n");
-    VkPhysicalDevice *pd = calloc(n, sizeof *pd);
-    vkEnumeratePhysicalDevices(g_vk.inst, &n, pd);
+    vkEnumeratePhysicalDevices(inst, &n, NULL);
+    if (!n && game) FATAL("no Vulkan device\n");
+    VkPhysicalDevice *pd = calloc(n ? n : 1, sizeof *pd);
+    vkEnumeratePhysicalDevices(inst, &n, pd);
     int want = getenv("LARECOMP_GPU") ? atoi(getenv("LARECOMP_GPU")) : -1, best = -1, best_score = -1;
     for (uint32_t i = 0; i < n; i++) {
         VkPhysicalDeviceProperties p;
         vkGetPhysicalDeviceProperties(pd[i], &p);
-        LOG("[vk] gpu %u: %s (api %u.%u.%u)\n", i, p.deviceName, VK_API_VERSION_MAJOR(p.apiVersion),
-            VK_API_VERSION_MINOR(p.apiVersion), VK_API_VERSION_PATCH(p.apiVersion));
+        if (game)
+            LOG("[vk] gpu %u: %s (api %u.%u.%u)\n", i, p.deviceName, VK_API_VERSION_MAJOR(p.apiVersion),
+                VK_API_VERSION_MINOR(p.apiVersion), VK_API_VERSION_PATCH(p.apiVersion));
         if (p.apiVersion < VK_API_VERSION_1_3) continue;
         int score = p.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU ? 3 : p.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU ? 2 : 1;
         if ((int)i == want) score = 100;
         if (score > best_score) { best_score = score; best = (int)i; }
     }
-    if (best < 0) FATAL("no Vulkan 1.3 device\n");
-    g_vk.phys = pd[best];
+    if (best < 0 && game) FATAL("no Vulkan 1.3 device\n");
+    VkPhysicalDevice chosen = best >= 0 ? pd[best] : VK_NULL_HANDLE;
     free(pd);
+    return chosen;
+}
+
+// The GPU the game will use, as the shader stamp names it, for a process with no window yet (--shaders-status:
+// runtime/setup_cli.c); in a running game, its own device. false: no usable Vulkan device.
+bool vk_gpu_identity(char *out, size_t n) {
+    if (g_vk.phys) return gpu_identity(&g_vk.props, out, n), true;
+#ifdef __ANDROID__
+    return false;
+#else
+    VkApplicationInfo app = {.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO, .apiVersion = VK_API_VERSION_1_3};
+    VkInstanceCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO, .pApplicationInfo = &app};
+    VkInstance inst;
+    if (vkCreateInstance(&ci, NULL, &inst) != VK_SUCCESS) return false;
+    VkPhysicalDevice phys = choose_physical(inst, false);
+    VkPhysicalDeviceProperties props;
+    if (phys) vkGetPhysicalDeviceProperties(phys, &props), gpu_identity(&props, out, n);
+    vkDestroyInstance(inst, NULL);
+    return phys != VK_NULL_HANDLE;
+#endif
+}
+
+// The device (choose_physical) and a queue that can present.
+static void pick_device(void) {
+    g_vk.phys = choose_physical(g_vk.inst, true);
     vkGetPhysicalDeviceProperties(g_vk.phys, &g_vk.props);
     uint32_t nq = 0;
     vkGetPhysicalDeviceQueueFamilyProperties(g_vk.phys, &nq, NULL);
@@ -414,11 +444,16 @@ void vk_log_memory(const char *why) {
 static size_t pcache_saved;  // bytes of the last save (or load)
 void vk_pipeline_cache_save(void);
 
+// The GPU and its driver as the shader caches and the shader stamp (runtime/shader_stamp.h) name them
+static void gpu_identity(const VkPhysicalDeviceProperties *p, char *out, size_t n) {
+    char uuid[2 * VK_UUID_SIZE + 1];
+    for (int i = 0; i < VK_UUID_SIZE; i++) snprintf(uuid + 2 * i, 3, "%02x", p->pipelineCacheUUID[i]);
+    snprintf(out, n, "%s, vendor %x device %x, driver %u, cache %s", p->deviceName, p->vendorID, p->deviceID, p->driverVersion, uuid);
+}
+
 static void pipeline_cache_tag(char *out, size_t n) {
-    char gpu[400], uuid[2 * VK_UUID_SIZE + 1];
-    for (int i = 0; i < VK_UUID_SIZE; i++) snprintf(uuid + 2 * i, 3, "%02x", g_vk.props.pipelineCacheUUID[i]);
-    snprintf(gpu, sizeof gpu, "%s, vendor %x device %x, driver %u, cache %s", g_vk.props.deviceName, g_vk.props.vendorID,
-             g_vk.props.deviceID, g_vk.props.driverVersion, uuid);
+    char gpu[400];
+    gpu_identity(&g_vk.props, gpu, sizeof gpu);
     shader_cache_tag(out, n, gpu);
 }
 
@@ -737,7 +772,7 @@ static void create_device(void) {
     vkEnumerateDeviceExtensionProperties(g_vk.phys, NULL, &ne, NULL);
     VkExtensionProperties *ep = calloc(ne, sizeof *ep);
     vkEnumerateDeviceExtensionProperties(g_vk.phys, NULL, &ne, ep);
-    const char *ext[20];
+    const char *ext[24];
     uint32_t n_ext = 0;
     ext[n_ext++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
     g_vk.custom_border = has_ext(ep, ne, VK_EXT_CUSTOM_BORDER_COLOR_EXTENSION_NAME);
@@ -796,6 +831,8 @@ static void create_device(void) {
     // LARECOMP_VK_SHADER_STATS=1: each pipeline's statistics from the driver (registers, spills, cycles: tuning shaders)
     bool pexec_ext = getenv("LARECOMP_VK_SHADER_STATS") && atoi(getenv("LARECOMP_VK_SHADER_STATS")) &&
                      has_ext(ep, ne, VK_KHR_PIPELINE_EXECUTABLE_PROPERTIES_EXTENSION_NAME);
+    // LARECOMP_FRAMETIME_CSV (frametime.c): when each present reached the display
+    bool pw_ext = ft_wanted() && has_ext(ep, ne, VK_KHR_PRESENT_ID_EXTENSION_NAME) && has_ext(ep, ne, VK_KHR_PRESENT_WAIT_EXTENSION_NAME);
     free(ep);
 
     // features the backend relies on (all present on current desktop drivers)
@@ -810,6 +847,9 @@ static void create_device(void) {
     if (g_vk.divisor) have_div.pNext = have.pNext, have.pNext = &have_div;
     VkPhysicalDeviceFaultFeaturesEXT have_ff = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT};
     if (fault) have_ff.pNext = have.pNext, have.pNext = &have_ff;
+    VkPhysicalDevicePresentIdFeaturesKHR have_pid = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_FEATURES_KHR};
+    VkPhysicalDevicePresentWaitFeaturesKHR have_pw = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_WAIT_FEATURES_KHR, .pNext = &have_pid};
+    if (pw_ext) have_pid.pNext = have.pNext, have.pNext = &have_pw;
     VkPhysicalDeviceAddressBindingReportFeaturesEXT have_va = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ADDRESS_BINDING_REPORT_FEATURES_EXT};
     if (g_va_report) have_va.pNext = have.pNext, have.pNext = &have_va;
 #if defined(__linux__) && defined(VK_EXT_map_memory_placed)
@@ -1095,6 +1135,15 @@ static void create_device(void) {
     VkPhysicalDeviceAddressBindingReportFeaturesEXT en_va = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ADDRESS_BINDING_REPORT_FEATURES_EXT, .reportAddressBinding = VK_TRUE};
     if (g_va_report) en_va.pNext = f.pNext, f.pNext = &en_va;
+    pw_ext = pw_ext && have_pid.presentId && have_pw.presentWait;
+    VkPhysicalDevicePresentIdFeaturesKHR en_pid = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_FEATURES_KHR, .presentId = VK_TRUE};
+    VkPhysicalDevicePresentWaitFeaturesKHR en_pw = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_WAIT_FEATURES_KHR,
+                                                    .presentWait = VK_TRUE, .pNext = &en_pid};
+    if (pw_ext) {
+        en_pid.pNext = f.pNext, f.pNext = &en_pw;
+        ext[n_ext++] = VK_KHR_PRESENT_ID_EXTENSION_NAME;
+        ext[n_ext++] = VK_KHR_PRESENT_WAIT_EXTENSION_NAME;
+    }
     float prio = 1.0f;
     VkDeviceQueueCreateInfo qi = {.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, .queueFamilyIndex = g_vk.qfam,
                                   .queueCount = 1, .pQueuePriorities = &prio};
@@ -1105,6 +1154,7 @@ static void create_device(void) {
     volkLoadDevice(g_vk.dev);
 #endif
     vkGetDeviceQueue(g_vk.dev, g_vk.qfam, 0, &g_vk.queue);
+    ft_init(pw_ext);
     if (g_vk.vids) {
         g_vk.set_vertex_input = (PFN_vkCmdSetVertexInputEXT)vkGetDeviceProcAddr(g_vk.dev, "vkCmdSetVertexInputEXT");
         if (!g_vk.set_vertex_input) g_vk.vids = false;
@@ -1304,7 +1354,7 @@ static void create_swapchain(void) {
             LOG("[vk] window surface lost while making the swapchain (%d): made again at the next frame\n", r);
             for (uint32_t i = 0; i < g_vk.sc_count; i++) vkDestroyImageView(g_vk.dev, g_vk.sc_views[i], NULL);
             g_vk.sc_count = 0;
-            if (old) vkDestroySwapchainKHR(g_vk.dev, old, NULL);
+            if (old) ft_swapchain_gone(old), vkDestroySwapchainKHR(g_vk.dev, old, NULL);
             g_vk.swapchain = VK_NULL_HANDLE;
             return;
         }
@@ -1317,7 +1367,7 @@ static void create_swapchain(void) {
     LOG("[vk] swapchain %ux%u, %u images, %s\n", phys.width, phys.height, count,
         ci.presentMode < 4 ? modes[ci.presentMode] : "other present mode");
     for (uint32_t i = 0; i < g_vk.sc_count; i++) vkDestroyImageView(g_vk.dev, g_vk.sc_views[i], NULL);
-    if (old) vkDestroySwapchainKHR(g_vk.dev, old, NULL);
+    if (old) ft_swapchain_gone(old), vkDestroySwapchainKHR(g_vk.dev, old, NULL);
     g_vk.sc_format = sf.format;
     g_vk.sc_extent = ext;
     g_vk.sc_phys = phys;
@@ -1348,7 +1398,7 @@ static bool recreate_surface(void) {
     static unsigned misses;
     for (uint32_t i = 0; i < g_vk.sc_count; i++) vkDestroyImageView(g_vk.dev, g_vk.sc_views[i], NULL);
     g_vk.sc_count = 0;
-    if (g_vk.swapchain) vkDestroySwapchainKHR(g_vk.dev, g_vk.swapchain, NULL);
+    if (g_vk.swapchain) ft_swapchain_gone(g_vk.swapchain), vkDestroySwapchainKHR(g_vk.dev, g_vk.swapchain, NULL);
     g_vk.swapchain = VK_NULL_HANDLE;
     if (g_vk.surface) vkDestroySurfaceKHR(g_vk.inst, g_vk.surface, NULL);
     g_vk.surface = VK_NULL_HANDLE;
@@ -1425,7 +1475,8 @@ bool vk_frame_begin(const float clear[4]) {
     if (rq_stopping()) return false;  // quitting: no window image after the window closed (#40)
     int w, h;
     SDL_GetWindowSizeInPixels(window, &w, &h);
-    if (!w || !h) return false;  // minimised
+    // minimised (Windows still reports the window's restored size then, while the surface has none: no window image)
+    if (!w || !h || (SDL_GetWindowFlags(window) & SDL_WINDOW_MINIMIZED)) return false;
     // The last present (the recorder's, record.c) must be done before the swapchain is used again - acquire and present
     // on the same swapchain are not allowed at the same time - and it may have asked for a new swapchain
     WAITING(rec_wait_presents(rec_presents_queued()));
@@ -1622,6 +1673,9 @@ static void save_window_image(VkCommandBuffer cb, VkSpan *out) {
 }
 
 // End rendering into the window image and present it. shot_path: also save the window image as PNG.
+static uint64_t ip_not_before;  // (Frame Generation's spacing, ip_space: when this present is to be made; 0: at once)
+static bool ft_repeat;     // (the frame-time CSV's: the present being made shows a frame again)
+static uint64_t ft_frame;  // (... and its game frame)
 void vk_frame_end(const char *shot_path) {
     if (!cur_frame.ok) return;
     VkCommandBuffer cb = vk_cmd();
@@ -1635,7 +1689,9 @@ void vk_frame_end(const char *shot_path) {
     vk_submit_extra(cur_frame.acquired, done_sem[img], VK_NULL_HANDLE);
     // the present follows the submission in the recorder's order (its wait for the display is the recorder's, counted in
     // g_vk_frame_waits[2]; an out-of-date result makes the next vk_frame_begin recreate the swapchain)
-    rec_QueuePresentKHR(done_sem[img], g_vk.swapchain, img);
+    extern bool vk_ip_mid;
+    rec_QueuePresentKHR(done_sem[img], g_vk.swapchain, img, vk_ip_mid ? 1 : ft_repeat ? 2 : 0, ft_frame, ip_not_before);
+    ip_not_before = 0;
     cur_frame.ok = false;
     if (shot_path) {
         vk_wait_seq(seq);
@@ -1726,8 +1782,8 @@ static const char *pp_text(void) {
 // Inline: before a game frame's image, its in-betweens (between the previous frame and this one) are made - each a
 // replay of the frame's lists with blended uniforms into the game's own targets - and presented, each with the
 // previous image's placement; FIFO (present_mode) shows each for one refresh. The frame's image is set aside first
-// (a copy) and put back before it is presented. In-betweens per frame: the refresh rate over the game's 60, less one
-// (120 Hz: 1, 240 Hz: 3), from 100 Hz.
+// (a copy) and put back before it is presented. In-betweens per frame: enough for 60 images a second at the game's
+// rate (30 fps: 1), spaced evenly over its frame (ip_mids).
 static struct { bool ok; float vx, vy, vw, vh, pv[8]; } ip_place;  // (the last image's placement in the window)
 static VkImage ip_held;
 static VmaAllocation ip_held_mem;
@@ -1762,32 +1818,33 @@ static bool ip_hold(TexBackend *b, bool restore) {  // false: no copy (no memory
     vk_full_barrier(cb);
     return true;
 }
-// Presents one refresh period apart (Frame Generation on): an in-between and its frame's image presented back to back
-// - within a millisecond - left their spacing to FIFO, and through the compositor (and Parsec on top) some were merged
-// or dropped: 120 presents a second showed as jerky motion. Each waits until a period after the one before
-// (LARECOMP_INTERP_SPACING=0: not, research).
-static double ip_hz;            // (ip_mids: the refresh rate the in-betweens are made for; 0: none being made)
+// Presents spaced evenly (Frame Generation on): an in-between and its frame's image presented back to back - within a
+// millisecond - left their spacing to FIFO, and through the compositor (and Parsec on top) some were merged or dropped.
+// A frame's first image (its first in-between, or its own image when it has none) is presented when it is ready; each
+// later one of the frame no earlier than an image period after the one before, by the recorder's presenter thread
+// (rec_QueuePresentKHR not_before: neither this thread nor the recorder waits) (LARECOMP_INTERP_SPACING=0: not,
+// research). Spacing a frame's first image from the frame before's held a frame that came late to that schedule, and
+// the next one behind it: the game's interval grew and the schedule with it (11 fps on an RTX 3050 Laptop).
+static double ip_hz;            // (ip_mids: the images a second being made, in-betweens included; 0: none being made)
 static double ip_rate;          // (stats: the refresh rate in use, learned or the display's - with in-betweens or not)
 static bool ip_restart;         // (Frame Generation was off: nothing learned or counted before counts)
-static bool ip_new_interval, ip_new_rate;  // (ip_mids, after a restart: the game's interval and the display's rate measured again)
+static bool ip_new_interval;  // (ip_mids, after a restart: the game's interval measured again)
 static uint64_t ip_log_last;
 static uint64_t ip_last_present;
-// (stats, ip_log: where the window's presents fell short of the refresh rate - gaps over 1.5 refresh periods, waits
-// that overslept by over half a period, and in-betweens not made, by reason)
-enum { IP_NOT_ALLOWED, IP_LOCKED, IP_NO_HOLD, IP_NOT_PREPARED, IP_CAPPED, IP_NO_BLEND, IP_NO_GPU, IP_NREASONS };
-static uint64_t ip_presents, ip_gaps, ip_overslept, ip_not_made[IP_NREASONS];
+// (stats, ip_log: where the window's presents fell short of the image rate - gaps over 1.5 image periods - and
+// in-betweens not made, by reason)
+enum { IP_NOT_ALLOWED, IP_LOCKED, IP_NO_HOLD, IP_NOT_PREPARED, IP_NO_BLEND, IP_NO_GPU, IP_NREASONS };
+static uint64_t ip_presents, ip_gaps, ip_not_made[IP_NREASONS];
 static double ip_gap_max;
-static void ip_space(void) {
+static bool ip_frame_mid;  // (this frame's in-betweens: one was presented)
+static void ip_space(bool after_mid) {
     static int on = -1;
     if (on < 0) on = !getenv("LARECOMP_INTERP_SPACING") || atoi(getenv("LARECOMP_INTERP_SPACING"));
     uint64_t now = plat_now_ns();
-    if (on && ip_hz > 0 && ip_last_present) {
+    ip_not_before = 0;
+    if (on && after_mid && ip_hz > 0 && ip_last_present) {
         uint64_t target = ip_last_present + (uint64_t)(0.97e9 / ip_hz);
-        if (now < target && target - now < 50000000ull) {
-            WAITING(SDL_DelayPrecise(target - now));
-            now = plat_now_ns();
-            ip_overslept += now > target && now - target > 0.5e9 / ip_hz;
-        }
+        if (now < target && target - now < 50000000ull) ip_not_before = now = target;
     }
     if (ip_hz > 0 && ip_last_present && now > ip_last_present) {
         double gap = (now - ip_last_present) / 1e6;
@@ -1802,19 +1859,38 @@ static void ip_log(void) {
     if (!ip_log_last) ip_log_last = now;
     if (now - ip_log_last < 2000000000ull) return;
     double dt = (now - ip_log_last) / 1e9;
-    static const char *why[IP_NREASONS] = {"cut", "busy", "no copy", "not prepared", "lower display rate", "no blend", "no GPU time"};
+    static const char *why[IP_NREASONS] = {"cut", "busy", "no copy", "not prepared", "no blend", "no GPU time"};
     char nm[200] = "";
     int o = 0;
     for (int i = 0; i < IP_NREASONS; i++)
         if (ip_not_made[i]) o += snprintf(nm + o, sizeof nm - (size_t)o, " %s %llu", why[i], (unsigned long long)ip_not_made[i]);
     if (ip_rate > 0 || o)
-        LOG("[interp] presents %.1f/s for %.0f Hz, gaps over 1.5 refreshes %llu (longest %.1f ms), waits overslept %llu | frames without in-betweens:%s\n",
-            ip_presents / dt, ip_rate, (unsigned long long)ip_gaps, ip_gap_max, (unsigned long long)ip_overslept, o ? nm : " none");
-    ip_presents = ip_gaps = ip_overslept = 0, ip_gap_max = 0;
+        LOG("[interp] presents %.1f/s for %.0f Hz, gaps over 1.5 image periods %llu (longest %.1f ms) | frames without in-betweens:%s\n",
+            ip_presents / dt, ip_rate, (unsigned long long)ip_gaps, ip_gap_max, o ? nm : " none");
+    ip_presents = ip_gaps = 0, ip_gap_max = 0;
     memset(ip_not_made, 0, sizeof ip_not_made);
     ip_log_last = now;
 }
-static void ip_present_mid(TexBackend *b) {  // an in-between in b (the game's image), placed as the last image
+// LARECOMP_INTERP_SHOTS=<frame>,... (tests): the window images around each of those game frames - the frame before's
+// image, the frame's in-betweens and its own image - as <LARECOMP_INTERP_SHOT_DIR (default build/interp-shots)>/
+// f<frame>_a_prev.png, _b_mid<m>.png, _c_game.png. what: 0 the frame's image, m > 0 its in-between m.
+static const char *ip_shot(uint64_t frame, int what) {
+    const char *e = getenv("LARECOMP_INTERP_SHOTS");
+    if (!e) return NULL;
+    const char *dir = getenv("LARECOMP_INTERP_SHOT_DIR") ? getenv("LARECOMP_INTERP_SHOT_DIR") : "build/interp-shots";
+    static char path[300];
+    for (const char *p = e; *p;) {
+        uint64_t f = strtoull(p, (char **)&p, 10);
+        mkdir(dir, 0755);
+        if (f == frame && what > 0) return snprintf(path, sizeof path, "%s/f%llu_b_mid%d.png", dir, (unsigned long long)f, what), path;
+        if (f == frame) return snprintf(path, sizeof path, "%s/f%llu_c_game.png", dir, (unsigned long long)f), path;
+        if (f == frame + 1 && !what) return snprintf(path, sizeof path, "%s/f%llu_a_prev.png", dir, (unsigned long long)f), path;
+        if (*p != ',') break;
+        p++;
+    }
+    return NULL;
+}
+static void ip_present_mid(TexBackend *b, int m) {  // in-between m in b (the game's image), placed as the last image
     static const float black[4] = {0, 0, 0, 1};
     extern bool vk_ip_mid;  // (exec.c: its GPU time is the in-between's)
     vk_ip_mid = true;
@@ -1822,8 +1898,9 @@ static void ip_present_mid(TexBackend *b) {  // an in-between in b (the game's i
         VkCommandBuffer cb = vk_cmd();
         vk_present_draw(cb, b, ip_place.vx, ip_place.vy, ip_place.vw, ip_place.vh, ip_place.pv);
         menu_render((void *)cb, g_vk.sc_extent.width, g_vk.sc_extent.height);
-        ip_space();
-        vk_frame_end(NULL);
+        ip_space(ip_frame_mid);
+        ip_frame_mid = true;
+        vk_frame_end(ip_shot(ft_frame, m));
     }
     vk_ip_mid = false;
 }
@@ -1832,77 +1909,41 @@ NvnTexture *g_vk_shown;  // the last game texture presented (textures.c forgets 
 static int ip_mids(TexBackend *b, uint64_t frame) {  // (the in-betweens shown)
     static uint64_t prev_ns;
     static double interval_ns;  // (smoothed: the game's frame interval)
-    static double win_sum, win_max;  // (the raw intervals of the current 30-frame check)
     uint64_t now = plat_now_ns();
     if (ip_new_interval) prev_ns = 0, interval_ns = 0, ip_new_interval = false;
     if (prev_ns && now > prev_ns) {
         double d = (double)(now - prev_ns);
         interval_ns = interval_ns > 0 && d < 4 * interval_ns ? interval_ns + (d - interval_ns) * 0.1 : d;
-        win_sum += d, win_max = fmax(win_max, d);
     }
     prev_ns = now;
     if (!ip_place.ok || interval_ns <= 0 || !b || !b->image || b->depth > 1 || b->layers > 1) return 0;
-    // The refresh rate the window's presents really get: the display's own (SDL), unless the frames with in-betweens
-    // showed fewer - a virtual display (Parsec: 120 Hz reported, presents paced at 60) held each image two refreshes
-    // and the game fell to its 30 fps mode. Learned from those frames, kept while the display reports the same rate.
-    // In-betweens only from 100 Hz: never at the cost of the game's own 60.
-    // (gameplay only, three 30-frame checks in a row, each steady - no frame over 1.5x the check's average: a movie's,
-    // a load's or a resolution change's hitches aren't the display. A cap is tried again after 10 s of the game at its
-    // 60 - 20 s, 40 s... up to 5 min each time it comes back: an 8x resolution scale's slow frames learned 61 Hz once,
-    // and nothing measured again.)
-    // LARECOMP_INTERP_HZ=<hz> (tests): that refresh rate, nothing learned.
-    static double hz_seen, hz_cap, hz_env = -1;
-    static int mids_last, settle, slow_checks, full_rate, retry_after = 600;
+    // In-betweens per game frame: as many as make 60 images a second from the game's own rate (a 30 fps game: one, half
+    // way through its frame; a game at 60: none), on any display that shows 60. They and the frame's image are spaced
+    // over the game's frame interval (ip_hz below), not the display's refresh: spaced one refresh apart, a 30 fps
+    // frame's in-between was shown for one refresh (7 ms at 144 Hz) and its image for the other 26 ms - motion jerked
+    // forward and stopped every frame, worse than none (0.3.3's player logs: a gap over 1.5 refreshes at every image).
+    // LARECOMP_INTERP_HZ=<hz> (tests): the display's refresh rate taken as that.
+    static double hz_seen, hz_env = -1;
     if (hz_env < 0) hz_env = getenv("LARECOMP_INTERP_HZ") ? atof(getenv("LARECOMP_INTERP_HZ")) : 0;
-    if (ip_new_rate) hz_seen = 0, mids_last = 0, ip_new_rate = false;  // (a learned rate starts over: logged and measured again)
     SDL_DisplayID did = SDL_GetDisplayForWindow(window);
     const SDL_DisplayMode *dm = did ? SDL_GetCurrentDisplayMode(did) : NULL;
     double hz = dm && dm->refresh_rate > 1 ? dm->refresh_rate : 60;
     if (hz != hz_seen) {
         LOG("[interp] display %u: %.2f Hz (SDL)%s\n", (unsigned)did, hz, hz_env > 0 ? " - LARECOMP_INTERP_HZ overrides it" : "");
-        hz_seen = hz, hz_cap = 0, settle = slow_checks = full_rate = 0, retry_after = 600;
+        hz_seen = hz;
     }
     if (hz_env > 0) hz = hz_env;
-    extern int game_in_play(void);      // hle/game_state.c
-    extern bool world_on_screen(void);  // hle/game_state.c
-    bool playing = hz_env <= 0 && game_in_play() && world_on_screen();
-    if (playing && mids_last > 0 && ++settle >= 30) {  // (30 frames with in-betweens)
-        double expect = (mids_last + 1) * 1e9 / (hz_cap > 0 ? fmin(hz, hz_cap) : hz), mean = win_sum / settle;
-        bool steady = win_max < 1.5 * mean;
-        settle = 0;
-        slow_checks = steady && mean > 1.3 * expect ? slow_checks + 1 : 0;
-        if (slow_checks >= 3) {
-            hz_cap = (mids_last + 1) * 1e9 / mean;
-            slow_checks = full_rate = 0;
-            static int nlog;
-            if (nlog++ < 10) LOG("[interp] the display shows %.0f images a second, not %.0f: in-betweens for %.0f Hz\n", hz_cap, hz, hz_cap);
-        }
-    }
-    if (!playing || mids_last == 0 || settle == 0) win_sum = win_max = 0;  // (a check counts its own 30 frames)
-    if (hz_cap > 0 && hz_cap < hz) {  // (trying the display's rate again)
-        full_rate = playing && interval_ns < 1.1e9 / 60 ? full_rate + 1 : 0;
-        if (full_rate >= retry_after) {
-            LOG("[interp] trying %.0f Hz again (the game held 60 for %d s)\n", hz, retry_after / 60);
-            hz_cap = 0, full_rate = settle = slow_checks = 0;
-            retry_after = retry_after * 2 > 18000 ? 18000 : retry_after * 2;
-        }
-    }
-    if (hz_env <= 0 && hz_cap > 0 && hz_cap < hz) hz = hz_cap;
-    // (counted for the game's own 60, not the measured interval: a game slowed to its 30 fps mode got more in-betweens,
-    // which held it at 30)
-    int mids = hz >= 100 ? (int)lround(hz / 60.0) - 1 : 0;
+    int mids = hz >= 59 ? (int)lround(interval_ns / 16.667e6) - 1 : 0;
     if (mids > 3) mids = 3;
     ip_rate = hz;
-    if (mids < 1) { ip_not_made[IP_CAPPED] += hz_cap > 0; mids_last = 0; ip_hz = 0; return 0; }
-    if (mids != mids_last) settle = slow_checks = 0;
-    mids_last = mids;
+    if (mids < 1) { ip_hz = 0; return 0; }
     // The GPU's time goes to the game's frames first (as on Metal): in-betweens only in what a game frame leaves of its
     // interval (interp.c interp_gpu_allowed; the in-betweens' submissions aren't counted in the game's time, exec.c).
     // Fewer than the refresh rate wants: evenly spaced, each shown longer.
     int allowed = interp_gpu_allowed(mids, interval_ns / 1e6);
     for (int m = allowed; m < mids; m++) interp_note_no_gpu();
     if (allowed < 1) { ip_not_made[IP_NO_GPU]++; ip_hz = 0; return 0; }
-    ip_hz = hz * (allowed + 1) / (mids + 1);  // (presents spaced for the images made)
+    ip_hz = (allowed + 1) * 1e9 / interval_ns;  // (images a second: presents spaced evenly over the game's frame)
     if (!interp_replays_allowed(frame, total_frames, now)) { ip_not_made[IP_NOT_ALLOWED]++; return 0; }
     if (!interp_replay_lock()) { ip_not_made[IP_LOCKED]++; return 0; }
     int made = 0;
@@ -1911,7 +1952,7 @@ static int ip_mids(TexBackend *b, uint64_t frame) {  // (the in-betweens shown)
         for (int m = 1; m <= allowed; m++) {
             if (!interp_prepare((float)m / (float)(allowed + 1))) break;
             renderer_interp_replay();
-            ip_present_mid(b);
+            ip_present_mid(b, m);
             made++;
         }
         ip_hold(b, true);
@@ -1928,6 +1969,7 @@ void backend_present_now(NvnTexture *t, uint64_t frame) {
     if (pp_on) pp_t = SDL_GetTicksNS();
     TexBackend *b = vk_tex(t, true);
     b->presented = true;
+    ft_frame = frame, ft_repeat = rq_on() ? rq_present_is_repeat() : direct_repeat;
     vk_end_pass();
     // the frame's work goes to the GPU now, in a submission of its own: it starts while we wait for the window's image.
     // Its GPU time is counted, and the window image's submission's from after its wait (exec.c gpu_timer_add)
@@ -1949,9 +1991,9 @@ void backend_present_now(NvnTexture *t, uint64_t frame) {
         int want = interp_wanted();
         if (!repeat) {
             if (want == INTERP_ON && ip_restart) {  // (turned on again: the stats from now, and measured again)
-                ip_restart = false, ip_new_interval = ip_new_rate = true;
+                ip_restart = false, ip_new_interval = true;
                 ip_last_present = ip_log_last = 0;
-                ip_presents = ip_gaps = ip_overslept = 0, ip_gap_max = 0;
+                ip_presents = ip_gaps = 0, ip_gap_max = 0;
                 memset(ip_not_made, 0, sizeof ip_not_made);
             }
             bool blend = interp_frame_end(want != INTERP_OFF);
@@ -2034,10 +2076,12 @@ void backend_present_now(NvnTexture *t, uint64_t frame) {
             snprintf(req, sizeof req, "%s", g_window_shot_request);
             g_window_shot_request[0] = 0;
         }
-        ip_space();
+        ip_space(ip_frame_mid);
+        ip_frame_mid = false;
         // LARECOMP_SHOT_PATH: where (tools/shot.sh: each SHOT_ID run its own, as metal.m; default build/window.png)
         const char *win_path = getenv("LARECOMP_SHOT_PATH") ? getenv("LARECOMP_SHOT_PATH") : "build/window.png";
-        vk_frame_end(shot ? win_path : req[0] ? req : NULL);
+        const char *ips = ip_shot(frame, 0);
+        vk_frame_end(shot ? win_path : req[0] ? req : ips);
         if (shot && getenv("LARECOMP_EXIT_AFTER_SHOT")) exit_after_shot();
     } else {
         renderer_submit();

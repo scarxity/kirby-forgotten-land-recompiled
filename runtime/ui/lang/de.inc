@@ -220,7 +220,7 @@
 {"Switch", "Switch"},
 {"Xbox / PlayStation", "Xbox / PlayStation"},
 {"Button layout", "Tastenbelegung"},
-{"Switch keeps the Switch's button positions, so the right button confirms. Xbox / PlayStation swaps the bottom and right buttons, so the bottom button confirms, as on those controllers. Applies to the game and LAS Recomp's menus. Nintendo controllers aren't affected.", "Switch behält die Knopfpositionen der Switch, der rechte Knopf bestätigt also. Xbox / PlayStation tauscht den unteren und den rechten Knopf, der untere Knopf bestätigt also, wie auf diesen Controllern. Gilt für das Spiel und die Menüs von LAS Recomp. Nintendo-Controller sind nicht betroffen."},
+{"Switch keeps the Switch's button positions, so the right button confirms. Xbox / PlayStation swaps the bottom and right buttons, so the bottom button confirms, as on those controllers. Applies to the game and the recomp's menus. Nintendo controllers aren't affected.", "Switch behält die Knopfpositionen der Switch, der rechte Knopf bestätigt also. Xbox / PlayStation tauscht den unteren und den rechten Knopf, der untere Knopf bestätigt also, wie auf diesen Controllern. Gilt für das Spiel und die Menüs der Recomp. Nintendo-Controller sind nicht betroffen."},
 {"Display", "Anzeige"},
 {"Appearance", "Aussehen"},
 {"Layout", "Layout"},
@@ -440,10 +440,6 @@
 {"Not recognized: %d.", "Nicht erkannt: %d."},
 {"They load the next time you start the game.", "Sie werden beim nächsten Spielstart geladen."},
 {"Imported fonts removed. You're back on the substitute fonts.", "Importierte Schriften entfernt. Du nutzt wieder die Ersatzschriften."},
-{"How would you like to play?", "Wie möchtest du spielen?"},
-{"You can change this any time in Settings.", "Du kannst das jederzeit in den Einstellungen ändern."},
-{"Original 16:9", "Original 16:9"},
-{"Unlocked, fill the screen", "Frei, ganzer Bildschirm"},
 {"Home button", "HOME-Knopf"},
 {"Xbox button", "Xbox-Taste"},
 {"PlayStation button", "PlayStation-Taste"},
@@ -563,10 +559,6 @@
 // runtime/ui/menu.mm
 {"Restart required", "Neustart nötig"},
 {"The Metal HUD shows after you restart the game.", "Das Metal HUD erscheint nach einem Neustart des Spiels."},
-{"Unlocked", "Frei"},
-{"Configure the shape of the picture. Unlocked fills the window, Original keeps 16:9.", "Legt die Form des Bildes fest. Frei füllt das Fenster, Original behält 16:9."},
-{"Aspect ratio", "Seitenverhältnis"},
-{"Unlocked fills the window and shows more of the island on wide screens, up to ultrawide. Original keeps the game's 16:9 view with bars.", "Frei füllt das Fenster und zeigt auf breiten Bildschirmen mehr von der Insel, bis Ultrawide. Original behält die 16:9-Ansicht des Spiels mit Balken."},
 {"Fullscreen", "Vollbild"},
 {"Fills the screen. You can also press F11, Alt+Enter or Cmd+Ctrl+F.", "Füllt den Bildschirm. Geht auch mit F11, Alt+Enter oder Cmd+Ctrl+F."},
 {"Top left", "Oben links"},
@@ -688,9 +680,6 @@
 {"Couldn't save", "Speichern fehlgeschlagen"},
 {"The game may say it saved, but it didn't. Your previous save is unchanged.", "Das Spiel zeigt vielleicht an, dass gespeichert wurde, aber das stimmt nicht. Dein vorheriger Spielstand ist unverändert."},
 {"Make sure this folder can be written to and the disk has free space:", "Prüfe, ob in diesen Ordner geschrieben werden kann und ob auf dem Laufwerk Platz frei ist:"},
-{"Reset to vanilla?", "Auf Original zurücksetzen?"},
-{"This resets your settings to the vanilla game experience.\nYour controls stay as they are.", "Das setzt deine Einstellungen auf das Original-Spielerlebnis zurück.\nDeine Steuerung bleibt, wie sie ist."},
-{"This also ends the current randomizer seed.\nIts save files are kept.", "Das beendet auch den aktuellen Randomizer-Seed.\nSeine Spielstände bleiben erhalten."},
 {"Enter your name", "Gib deinen Namen ein"},
 {"Enter  confirm      Esc  cancel      (%d / %d)", "Enter  bestätigen      Esc  abbrechen      (%d / %d)"},
 {"Video", "Video"},
@@ -718,7 +707,6 @@
 {"+1 Heart", "+1 Herz"},
 {"Secret Seashells", "Zaubermuscheln"},
 // runtime/ui/plastic.mm
-{"Reset to vanilla", "Auf Original zurücksetzen"},
 // runtime/ui/race_overlay.mm
 {"SEED HASH", "SEED-HASH"},
 // runtime/ui/rando_tab.mm

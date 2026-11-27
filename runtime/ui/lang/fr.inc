@@ -220,7 +220,7 @@
 {"Switch", "Switch"},
 {"Xbox / PlayStation", "Xbox / PlayStation"},
 {"Button layout", "Disposition des boutons"},
-{"Switch keeps the Switch's button positions, so the right button confirms. Xbox / PlayStation swaps the bottom and right buttons, so the bottom button confirms, as on those controllers. Applies to the game and LAS Recomp's menus. Nintendo controllers aren't affected.", "Switch garde la position des boutons de la Switch : le bouton de droite valide. Xbox / PlayStation échange les boutons du bas et de droite : le bouton du bas valide, comme sur ces manettes. S'applique au jeu et aux menus de LAS Recomp. Les manettes Nintendo ne sont pas concernées."},
+{"Switch keeps the Switch's button positions, so the right button confirms. Xbox / PlayStation swaps the bottom and right buttons, so the bottom button confirms, as on those controllers. Applies to the game and the recomp's menus. Nintendo controllers aren't affected.", "Switch garde la position des boutons de la Switch : le bouton de droite valide. Xbox / PlayStation échange les boutons du bas et de droite : le bouton du bas valide, comme sur ces manettes. S'applique au jeu et aux menus du recomp. Les manettes Nintendo ne sont pas concernées."},
 {"Display", "Affichage"},
 {"Appearance", "Apparence"},
 {"Layout", "Disposition"},
@@ -440,10 +440,6 @@
 {"Not recognized: %d.", "Non reconnues : %d."},
 {"They load the next time you start the game.", "Elles se chargeront au prochain lancement du jeu."},
 {"Imported fonts removed. You're back on the substitute fonts.", "Polices importées supprimées. Tu reviens aux polices de remplacement."},
-{"How would you like to play?", "Comment veux-tu jouer ?"},
-{"You can change this any time in Settings.", "Tu peux changer ça à tout moment dans les paramètres."},
-{"Original 16:9", "16:9 d'origine"},
-{"Unlocked, fill the screen", "Libre, plein écran"},
 {"Home button", "Bouton Home"},
 {"Xbox button", "Bouton Xbox"},
 {"PlayStation button", "Bouton PlayStation"},
@@ -563,10 +559,6 @@
 // runtime/ui/menu.mm
 {"Restart required", "Redémarrage nécessaire"},
 {"The Metal HUD shows after you restart the game.", "Le Metal HUD s'affiche après le redémarrage du jeu."},
-{"Unlocked", "Libre"},
-{"Configure the shape of the picture. Unlocked fills the window, Original keeps 16:9.", "Règle la forme de l'image. Libre remplit la fenêtre, Original garde le 16:9."},
-{"Aspect ratio", "Format d'image"},
-{"Unlocked fills the window and shows more of the island on wide screens, up to ultrawide. Original keeps the game's 16:9 view with bars.", "Libre remplit la fenêtre et montre plus de l'île sur les écrans larges, jusqu'à l'ultra-large. Original garde la vue 16:9 du jeu avec des bandes."},
 {"Fullscreen", "Plein écran"},
 {"Fills the screen. You can also press F11, Alt+Enter or Cmd+Ctrl+F.", "Remplit l'écran. Tu peux aussi appuyer sur F11, Alt+Entrée ou Cmd+Ctrl+F."},
 {"Top left", "En haut à gauche"},
@@ -688,9 +680,6 @@
 {"Couldn't save", "Sauvegarde impossible"},
 {"The game may say it saved, but it didn't. Your previous save is unchanged.", "Le jeu peut indiquer que la partie a été sauvegardée, mais ce n'est pas le cas. Ta sauvegarde précédente est intacte."},
 {"Make sure this folder can be written to and the disk has free space:", "Vérifie que ce dossier est accessible en écriture et que le disque a de l'espace libre :"},
-{"Reset to vanilla?", "Revenir au jeu d'origine ?"},
-{"This resets your settings to the vanilla game experience.\nYour controls stay as they are.", "Tes paramètres reviennent à l'expérience du jeu d'origine.\nTes commandes ne changent pas."},
-{"This also ends the current randomizer seed.\nIts save files are kept.", "Ça met aussi fin à la seed du randomizer en cours.\nSes sauvegardes sont conservées."},
 {"Enter your name", "Entre ton nom"},
 {"Enter  confirm      Esc  cancel      (%d / %d)", "Entrée  valider      Échap  annuler      (%d / %d)"},
 {"Video", "Vidéo"},
@@ -718,7 +707,6 @@
 {"+1 Heart", "+1 cœur"},
 {"Secret Seashells", "Coquillages"},
 // runtime/ui/plastic.mm
-{"Reset to vanilla", "Revenir au jeu d'origine"},
 // runtime/ui/race_overlay.mm
 {"SEED HASH", "HASH DE LA SEED"},
 // runtime/ui/rando_tab.mm

@@ -7,8 +7,9 @@
 # `make verify GAME=<dump>`, see docs/testing.md. The checks themselves live in tools/ci/run.sh, so
 # `make ci-test` runs what these jobs run.
 #
-# GitHub-hosted runners only, no secrets, nothing published. Actions are pinned to full commit SHAs
-# (checkout v6.1.0, cache v5.1.0, setup-node v6.5.0, setup-msys2 v2.33.0).
+# GitHub-hosted runners only, no secrets, nothing published (the linux job keeps its AppImage as a workflow artifact for
+# seven days, to test it). Actions are pinned to full commit SHAs (checkout v6.1.0, cache v5.1.0, setup-node v6.5.0,
+# setup-msys2 v2.33.0, upload-artifact v7.0.2).
 name: CI
 on:
   push:
@@ -48,6 +49,48 @@ jobs:
       - name: Game-free tests
         if: ${{ !cancelled() }}
         run: bash tools/ci/run.sh engine
+
+  # The Linux build (untested by play: docs/linux.md), in the container of tools/linux/Containerfile (Ubuntu 22.04, clang
+  # 21): the dependencies from pinned sources (SDL3, the LGPL FFmpeg with its decoders checked, shaderc), the runtime, the
+  # game-free tests that run on Linux (tools/ci/run.sh: the Windows-only ones and the ones that need glslc / spirv-val
+  # are listed as SKIP), then the AppImage. The dependencies are cached: the first run builds shaderc, about half an hour.
+  linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25  # v5.1.0
+        with:
+          path: |
+            build/linux/src
+            build/linux/x86_64/deps
+          key: linux-deps-${{ hashFiles('tools/linux/build_deps.sh', 'tools/linux/Containerfile') }}
+      - name: Container image
+        run: docker build -t forgottenland-build -f tools/linux/Containerfile tools/linux
+      # (as the runner's own user, so the cache and the artifact are not root's)
+      - name: Dependencies
+        run: |
+          docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD:/src" -w /src forgottenland-build tools/linux/build_deps.sh x86_64
+      - name: Runtime build and game-free tests
+        run: |
+          docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -e PY=python3.12 -v "$PWD:/src" -w /src forgottenland-build bash -c '
+            P=$PWD/build/linux/x86_64/deps
+            export CPATH=$P/include LIBRARY_PATH=$P/lib LD_LIBRARY_PATH=$P/lib PKG_CONFIG_PATH=$P/lib/pkgconfig
+            export EXE=build/linux/x86_64/game/ForgottenLandRecomp
+            export MAKEARGS="B=build/linux/x86_64/game DEPS=$P SHADERC=-lshaderc_shared"
+            tools/ci/run.sh build engine'
+      - name: AppImage
+        run: |
+          docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD:/src" -w /src forgottenland-build bash -c '
+            tools/linux/gen_helper.sh x86_64 && tools/linux/package.sh x86_64'
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: ForgottenLandRecomp-Linux-x86_64-AppImage
+          path: build/dist/*.AppImage
+          if-no-files-found: error
+          retention-days: 7
 
   # The launcher: its Rust side (cargo test) and its page (node's test runner, no npm packages needed).
   launcher:

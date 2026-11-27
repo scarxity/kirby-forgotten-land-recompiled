@@ -38,7 +38,6 @@ const char *touch_control_name(int i) {
 }
 
 Settings g_settings = {
-    .aspect = ASPECT_ORIGINAL,
     .dyn_min = 540,
     .fullscreen = false,
     .volume = 1.0f,
@@ -186,7 +185,7 @@ void settings_load(void) {
     FILE *f = fopen(SETTINGS_FILE, "r");
     if (!f) return;
     char line[256];
-    bool tip_key = false, aspect_key = false;
+    bool tip_key = false;
     while (fgets(line, sizeof line, f)) {
         line[strcspn(line, "\r\n")] = 0;
         char key[64];
@@ -194,8 +193,7 @@ void settings_load(void) {
         int fields = sscanf(line, " %63[^= ] = %127[^\n]", key, val);
         if (fields < 1) continue;
         if (fields != 2) continue;
-        if (!strcmp(key, "aspect")) g_settings.aspect = !strcmp(val, "original") ? ASPECT_ORIGINAL : ASPECT_UNLOCKED;
-        else if (!strcmp(key, "fullscreen")) g_settings.fullscreen = atoi(val) != 0;
+        if (!strcmp(key, "fullscreen")) g_settings.fullscreen = atoi(val) != 0;
         else if (!strcmp(key, "volume")) g_settings.volume = (float)atof(val);
         else if (!strcmp(key, "audio_output")) {
             g_settings.audio_out = AUDIO_OUT_STEREO;
@@ -279,13 +277,11 @@ void settings_load(void) {
                 if (!strcmp(v, g_language_codes[i])) g_settings.language = i;
         }
         else if (!strcmp(key, "menu_tip_seen")) g_settings.menu_tip_seen = atoi(val) != 0, tip_key = true;
-        else if (!strcmp(key, "aspect_asked")) g_settings.aspect_asked = atoi(val) != 0, aspect_key = true;
         else if (!strcmp(key, "onedrive_kept")) g_settings.onedrive_kept = atoi(val) != 0;
         else bind_settings_load(key, val);  // bind_pad_* / bind_key_*: runtime/hle/bindings.c
     }
     fclose(f);
     if (!tip_key) g_settings.menu_tip_seen = true;  // (a settings file from before the note: not a first launch)
-    if (!aspect_key) g_settings.aspect_asked = true;  // (likewise: the aspect ratio was chosen already)
     if (g_settings.show_fps > FPS_OFF && g_settings.show_fps < N_FPS_CORNERS) g_settings.fps_corner = g_settings.show_fps;
     if (g_settings.volume < 0) g_settings.volume = 0;
     if (g_settings.volume > 2) g_settings.volume = 2;
@@ -309,7 +305,6 @@ void settings_save(void) {
     if (!f) { LOG("[settings] cannot write %s\n", SETTINGS_FILE); return; }
 #endif
     fprintf(f, "# " GAME_NAME " settings (edited from the in-game menu: F1, Esc, or Minus+Plus on a controller)\n");
-    fprintf(f, "aspect = %s\n", g_settings.aspect == ASPECT_ORIGINAL ? "original" : "unlocked");
     fprintf(f, "fullscreen = %d\n", g_settings.fullscreen);
     fprintf(f, "volume = %.2f\n", g_settings.volume);
     fprintf(f, "audio_output = %s\n", k_audio_out_keys[g_settings.audio_out == AUDIO_OUT_51]);
@@ -364,7 +359,6 @@ void settings_save(void) {
     fprintf(f, "face_buttons_by_label = %d\n", g_settings.face_by_label);
     fprintf(f, "language = %s\n", g_language_codes[g_settings.language > LANG_AUTO && g_settings.language < N_LANGUAGES
                                                      ? g_settings.language : LANG_AUTO]);
-    fprintf(f, "aspect_asked = %d\n", g_settings.aspect_asked);
     fprintf(f, "menu_tip_seen = %d\n", g_settings.menu_tip_seen);
     fprintf(f, "onedrive_kept = %d\n", g_settings.onedrive_kept);
     bind_settings_save(f);

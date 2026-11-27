@@ -220,7 +220,7 @@
 {"Switch", "Switch"},
 {"Xbox / PlayStation", "Xbox / PlayStation"},
 {"Button layout", "Knopindeling"},
-{"Switch keeps the Switch's button positions, so the right button confirms. Xbox / PlayStation swaps the bottom and right buttons, so the bottom button confirms, as on those controllers. Applies to the game and LAS Recomp's menus. Nintendo controllers aren't affected.", "Switch houdt de knopposities van de Switch, dus de rechterknop bevestigt. Xbox / PlayStation wisselt de onderste en rechterknop om, dus de onderste knop bevestigt, zoals op die controllers. Geldt voor de game en de menu's van LAS Recomp. Nintendo-controllers veranderen niet."},
+{"Switch keeps the Switch's button positions, so the right button confirms. Xbox / PlayStation swaps the bottom and right buttons, so the bottom button confirms, as on those controllers. Applies to the game and the recomp's menus. Nintendo controllers aren't affected.", "Switch houdt de knopposities van de Switch, dus de rechterknop bevestigt. Xbox / PlayStation wisselt de onderste en rechterknop om, dus de onderste knop bevestigt, zoals op die controllers. Geldt voor de game en de menu's van de recomp. Nintendo-controllers veranderen niet."},
 {"Display", "Beeld"},
 {"Appearance", "Uiterlijk"},
 {"Layout", "Indeling"},
@@ -440,10 +440,6 @@
 {"Not recognized: %d.", "Niet herkend: %d."},
 {"They load the next time you start the game.", "Ze worden geladen als je het spel de volgende keer start."},
 {"Imported fonts removed. You're back on the substitute fonts.", "Geïmporteerde lettertypen verwijderd. Je gebruikt weer de vervangende lettertypen."},
-{"How would you like to play?", "Hoe wil je spelen?"},
-{"You can change this any time in Settings.", "Je kunt dit altijd wijzigen bij Instellingen."},
-{"Original 16:9", "Origineel 16:9"},
-{"Unlocked, fill the screen", "Ontgrendeld, vult het scherm"},
 {"Home button", "HOME-knop"},
 {"Xbox button", "Xbox-knop"},
 {"PlayStation button", "PlayStation-knop"},
@@ -563,10 +559,6 @@
 // runtime/ui/menu.mm
 {"Restart required", "Herstart nodig"},
 {"The Metal HUD shows after you restart the game.", "De Metal HUD verschijnt nadat je het spel herstart."},
-{"Unlocked", "Ontgrendeld"},
-{"Configure the shape of the picture. Unlocked fills the window, Original keeps 16:9.", "Stelt de vorm van het beeld in. Ontgrendeld vult het venster, Origineel houdt 16:9."},
-{"Aspect ratio", "Beeldverhouding"},
-{"Unlocked fills the window and shows more of the island on wide screens, up to ultrawide. Original keeps the game's 16:9 view with bars.", "Ontgrendeld vult het venster en laat op brede schermen meer van het eiland zien, tot en met ultrawide. Origineel houdt het 16:9-beeld van het spel aan, met balken."},
 {"Fullscreen", "Volledig scherm"},
 {"Fills the screen. You can also press F11, Alt+Enter or Cmd+Ctrl+F.", "Vult het scherm. Je kunt ook op F11, Alt+Enter of Cmd+Ctrl+F drukken."},
 {"Top left", "Linksboven"},
@@ -688,9 +680,6 @@
 {"Couldn't save", "Opslaan mislukt"},
 {"The game may say it saved, but it didn't. Your previous save is unchanged.", "Het spel zegt misschien dat er is opgeslagen, maar dat is niet zo. Je vorige opgeslagen spel is ongewijzigd."},
 {"Make sure this folder can be written to and the disk has free space:", "Controleer of er in deze map geschreven kan worden en of de schijf vrije ruimte heeft:"},
-{"Reset to vanilla?", "Terug naar origineel?"},
-{"This resets your settings to the vanilla game experience.\nYour controls stay as they are.", "Dit zet je instellingen terug naar het originele spel.\nJe besturing blijft zoals die is."},
-{"This also ends the current randomizer seed.\nIts save files are kept.", "Dit beëindigt ook de huidige randomizerseed.\nDe opslagbestanden ervan blijven bewaard."},
 {"Enter your name", "Voer je naam in"},
 {"Enter  confirm      Esc  cancel      (%d / %d)", "Enter  bevestigen      Esc  annuleren      (%d / %d)"},
 {"Video", "Beeld"},
@@ -718,7 +707,6 @@
 {"+1 Heart", "+1 hartje"},
 {"Secret Seashells", "Wonderschelpen"},
 // runtime/ui/plastic.mm
-{"Reset to vanilla", "Terug naar origineel"},
 // runtime/ui/race_overlay.mm
 {"SEED HASH", "SEEDHASH"},
 // runtime/ui/rando_tab.mm

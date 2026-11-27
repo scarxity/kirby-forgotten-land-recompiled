@@ -220,7 +220,7 @@
 {"Switch", "Switch"},
 {"Xbox / PlayStation", "Xbox / PlayStation"},
 {"Button layout", "Layout dos botões"},
-{"Switch keeps the Switch's button positions, so the right button confirms. Xbox / PlayStation swaps the bottom and right buttons, so the bottom button confirms, as on those controllers. Applies to the game and LAS Recomp's menus. Nintendo controllers aren't affected.", "Switch mantém a posição dos botões do Switch, então o botão da direita confirma. Xbox / PlayStation troca os botões de baixo e da direita, então o botão de baixo confirma, como nesses controles. Vale para o jogo e para os menus do LAS Recomp. Controles da Nintendo não são afetados."},
+{"Switch keeps the Switch's button positions, so the right button confirms. Xbox / PlayStation swaps the bottom and right buttons, so the bottom button confirms, as on those controllers. Applies to the game and the recomp's menus. Nintendo controllers aren't affected.", "Switch mantém a posição dos botões do Switch, então o botão da direita confirma. Xbox / PlayStation troca os botões de baixo e da direita, então o botão de baixo confirma, como nesses controles. Vale para o jogo e para os menus do recomp. Controles da Nintendo não são afetados."},
 {"Display", "Tela"},
 {"Appearance", "Aparência"},
 {"Layout", "Layout"},
@@ -440,10 +440,6 @@
 {"Not recognized: %d.", "Não reconhecidas: %d."},
 {"They load the next time you start the game.", "Elas carregam na próxima vez que você iniciar o jogo."},
 {"Imported fonts removed. You're back on the substitute fonts.", "Fontes importadas removidas. Você voltou às fontes substitutas."},
-{"How would you like to play?", "Como você quer jogar?"},
-{"You can change this any time in Settings.", "Você pode mudar isso quando quiser em Configurações."},
-{"Original 16:9", "16:9 original"},
-{"Unlocked, fill the screen", "Livre, preenche a tela"},
 {"Home button", "botão HOME"},
 {"Xbox button", "botão Xbox"},
 {"PlayStation button", "botão PlayStation"},
@@ -563,10 +559,6 @@
 // runtime/ui/menu.mm
 {"Restart required", "Reinício necessário"},
 {"The Metal HUD shows after you restart the game.", "O Metal HUD aparece depois que você reiniciar o jogo."},
-{"Unlocked", "Livre"},
-{"Configure the shape of the picture. Unlocked fills the window, Original keeps 16:9.", "Configura o formato da imagem. Livre preenche a janela, Original mantém 16:9."},
-{"Aspect ratio", "Proporção"},
-{"Unlocked fills the window and shows more of the island on wide screens, up to ultrawide. Original keeps the game's 16:9 view with bars.", "Livre preenche a janela e mostra mais da ilha em telas largas, até ultrawide. Original mantém a visão 16:9 do jogo com barras."},
 {"Fullscreen", "Tela cheia"},
 {"Fills the screen. You can also press F11, Alt+Enter or Cmd+Ctrl+F.", "Preenche a tela. Você também pode apertar F11, Alt+Enter ou Cmd+Ctrl+F."},
 {"Top left", "Superior esquerdo"},
@@ -688,9 +680,6 @@
 {"Couldn't save", "Não foi possível salvar"},
 {"The game may say it saved, but it didn't. Your previous save is unchanged.", "O jogo pode dizer que salvou, mas não salvou. Seu arquivo salvo anterior não mudou."},
 {"Make sure this folder can be written to and the disk has free space:", "Verifique se é possível gravar nesta pasta e se o disco tem espaço livre:"},
-{"Reset to vanilla?", "Voltar ao original?"},
-{"This resets your settings to the vanilla game experience.\nYour controls stay as they are.", "Isso volta suas configurações à experiência do jogo original.\nSeus controles continuam como estão."},
-{"This also ends the current randomizer seed.\nIts save files are kept.", "Isso também encerra a seed atual do randomizer.\nOs arquivos salvos dela são mantidos."},
 {"Enter your name", "Digite seu nome"},
 {"Enter  confirm      Esc  cancel      (%d / %d)", "Enter  confirmar      Esc  cancelar      (%d / %d)"},
 {"Video", "Vídeo"},
@@ -718,7 +707,6 @@
 {"+1 Heart", "+1 Coração"},
 {"Secret Seashells", "Conchas Secretas"},
 // runtime/ui/plastic.mm
-{"Reset to vanilla", "Voltar ao original"},
 // runtime/ui/race_overlay.mm
 {"SEED HASH", "HASH DA SEED"},
 // runtime/ui/rando_tab.mm

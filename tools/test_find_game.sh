@@ -3,6 +3,7 @@
 # folder and compares its verdict with what the setup must decide. Run it with `make test-find-game` in Git Bash.
 set -u
 EXE=${1:?usage: test_find_game.sh <runtime exe>}
+command -v cygpath >/dev/null || cygpath() { echo "$2"; }  # (Linux: paths are as they are)
 T=$(mktemp -d)
 trap 'rm -rf "$T"' EXIT
 export LARECOMP_DATA_ROOT=$(cygpath -w "$T/data")

@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Forgotten Land Recomp
+Comment=Kirby and the Forgotten Land, recompiled (bring your own game files)
+Exec=__EXE__
+Icon=ForgottenLand
+Categories=Game;
+Terminal=false

@@ -135,10 +135,10 @@ static void default_home(char *root, size_t n) {
     const char *ext = SDL_GetAndroidExternalStoragePath();
     snprintf(root, n, "%s", ext ? ext : SDL_GetAndroidInternalStoragePath());
 #elif defined(__linux__)
-    // (the AppImage is read-only): $XDG_DATA_HOME/lasrecomp, ~/.local/share/lasrecomp by default
+    // (the AppImage is read-only): $XDG_DATA_HOME/ForgottenLandRecomp, ~/.local/share/ForgottenLandRecomp by default
     const char *xdg = getenv("XDG_DATA_HOME"), *home = getenv("HOME");
-    if (xdg && *xdg == '/') snprintf(root, n, "%s/lasrecomp", xdg);
-    else snprintf(root, n, "%s/.local/share/lasrecomp", home && *home ? home : "/tmp");
+    if (xdg && *xdg == '/') snprintf(root, n, "%s/ForgottenLandRecomp", xdg);
+    else snprintf(root, n, "%s/.local/share/ForgottenLandRecomp", home && *home ? home : "/tmp");
 #elif PLAT_IOS
     snprintf(root, n, "%s", plat_ios_documents());  // (the app's folder in Files; the pointer file lives there too)
 #else
@@ -557,7 +557,7 @@ static bool empty_dir(const char *dir) {
                                //  SD card's app folder on Android held one, so the data went into "LAS Recomp" in it)
         empty = !strcmp(n, ".") || !strcmp(n, "..") || !strcmp(n, ".DS_Store") || !strcmp(n, ".localized") ||
                 !strcmp(n, "desktop.ini") || !strcmp(n, "Thumbs.db") ||
-                (!strncmp(n, "lasrecomp", 9) && k > 4 && !strcmp(n + k - 4, ".log"));
+                ((!strncmp(n, "lasrecomp", 9) || !strncmp(n, GAME_LOG, 4)) && k > 4 && !strcmp(n + k - 4, ".log"));
     }
     closedir(d);
     return empty;

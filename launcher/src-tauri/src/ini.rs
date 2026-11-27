@@ -83,6 +83,16 @@ mod tests {
     }
 
     #[test]
+    fn a_line_for_a_setting_the_launcher_no_longer_shows_is_kept() {
+        let ini = "aspect = unlocked
+volume = 0.50
+";
+        assert_eq!(apply(ini, &[e("volume", "1.00")]), "aspect = unlocked
+volume = 1.00
+");
+    }
+
+    #[test]
     fn a_missing_file_gets_just_the_entries() {
         assert_eq!(apply("", &[e("fullscreen", "1")]), "fullscreen = 1\n");
     }

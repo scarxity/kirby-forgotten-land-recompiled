@@ -1,4 +1,28 @@
 #!/bin/sh
-# AppImage entry: the game, with its shipped files next to it (runtime/paths.c rt_resource)
+# AppImage entry: the game, with its shipped files next to it (runtime/paths.c rt_resource).
+#   ForgottenLandRecomp.AppImage --prepare <folder with exefs and romfs>   sets the game up (docs/linux.md), once
+#   ForgottenLandRecomp.AppImage                                           plays it when it is set up
+# Any other arguments go to the runtime as they are (docs/launcher-runtime-contract.md: --check, --status, ...).
+# Started as an AppImage the files sit in a read-only mount, so the data (the game files, the game code, shaders,
+# saves, settings) goes to ~/.local/share/ForgottenLandRecomp (runtime/paths.c) unless LARECOMP_DATA_ROOT says otherwise.
+# RecompLauncher unpacks the AppImage and starts this file from the unpacked folder (no $APPIMAGE): the data root is then
+# the runtime's own default for the exe's folder, or the one recomplauncher.json names.
 HERE=$(dirname "$(readlink -f "$0")")
-exec "$HERE/usr/bin/lasrecomp" "$@"
+EXE=$HERE/usr/bin/ForgottenLandRecomp
+if [ -z "$LARECOMP_DATA_ROOT" ] && [ -n "$APPIMAGE" ]; then
+    LARECOMP_DATA_ROOT=${XDG_DATA_HOME:-$HOME/.local/share}/ForgottenLandRecomp
+    mkdir -p "$LARECOMP_DATA_ROOT" && export LARECOMP_DATA_ROOT
+fi
+if [ $# -eq 0 ]; then
+    case $("$EXE" --status 2>/dev/null | tail -n 1) in
+        ready) exec "$EXE" extracted --play ;;
+        build) msg="The game code needs building again (a new version of this program). Run: ${APPIMAGE:-$0} --rebuild-code" ;;
+        *) msg="The game is not set up yet. Run once: ${APPIMAGE:-$0} --prepare <folder with your exefs and romfs>
+It builds the game code and the shaders from your own files (about 20 minutes), then start this program again to play.
+How to extract the files: https://github.com/scarxity/kirby-forgotten-land-recompiled" ;;
+    esac
+    echo "$msg" >&2
+    [ -t 2 ] || ! command -v zenity >/dev/null || zenity --info --no-markup --title "Forgotten Land Recomp" --text "$msg" 2>/dev/null
+    exit 2
+fi
+exec "$EXE" "$@"

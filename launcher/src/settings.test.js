@@ -68,14 +68,15 @@ test('a saved volume above 100% is shown at the top of the slider and left as it
   assert.equal(row('volume').step, 0.05);
 });
 
-test('the defaults are the ones the game uses with no key: original 16:9, background input off', () => {
-  assert.equal(get('aspect'), 'original');
-  assert.equal(get('aspect', { aspect: 'unlocked' }), 'unlocked');
+test('the defaults are the ones the game uses with no key: background input off', () => {
   assert.equal(get('background_input'), '0');
   assert.equal(get('background_input', { background_input: '1' }), '1');
   const c = readFileSync(new URL('../../runtime/settings.c', import.meta.url), 'utf8');
-  assert.match(c, /\.aspect = ASPECT_ORIGINAL,/);
   assert.doesNotMatch(c, /\.bg_input = true/);
+});
+
+test('there is no aspect ratio row and nothing offers unlocked: the view is the game 16:9', () => {
+  assert.equal(ROWS.some((r) => r.key === 'aspect' || r.options?.some(([v]) => v === 'unlocked')), false);
 });
 
 test('the launcher own preference is read from the prefs, not the ini', () => {

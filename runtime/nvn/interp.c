@@ -396,12 +396,32 @@ bool interp_replay_lock(void) {
 }
 void interp_replay_unlock(void) { pthread_mutex_unlock(&free_lock); }
 
+// The textures the frame's lists used (textures.c: every GPU use of one goes through tex_backend). A texture the game
+// destroys while the frame runs makes it a cut only if the frame used it - its replays would draw with a freed texture.
+// Every destroy counted made the guide clips' frames cuts (a movie texture a frame destroyed: 65% of the first stage's
+// frames without in-betweens while one plays) and their images shown twice as long as the rest.
+#define UBITS 12
+static const void *used_tex[1 << UBITS];
+static bool used_full;
+static bool used_slot(const void *t, bool add) {
+    uint32_t h = (uint32_t)(((uintptr_t)t * 0x9E3779B97F4A7C15ull) >> (64 - UBITS));
+    for (int i = 0; i < (1 << UBITS); i++, h = (h + 1) & ((1 << UBITS) - 1)) {
+        if (used_tex[h] == t) return true;
+        if (!used_tex[h]) { if (add) used_tex[h] = t; return add; }
+    }
+    if (add) used_full = true;
+    return false;
+}
+void interp_texture_used(const void *t) {
+    if (frame_open && g_interp_log && !g_interp_replaying && t) used_slot(t, true);
+}
 bool interp_list_submitted(uint64_t handle) {
     if (!g_interp_log || g_interp_replaying) return false;
     bool first = !frame_open;
     if (first) {
         frame_open = true;
         memset(occ_keys, 0, sizeof occ_keys);
+        memset(used_tex, 0, sizeof used_tex), used_full = false;
         cur->free_gen = atomic_load(&free_gen);
         atomic_store(&free_kinds, 0);
     }
@@ -410,7 +430,7 @@ bool interp_list_submitted(uint64_t handle) {
     return first;
 }
 
-void interp_texture_destroyed(void) { if (frame_open) cur->destroyed = true; }
+void interp_texture_destroyed(const void *t) { if (frame_open && (!t || used_full || used_slot(t, false))) cur->destroyed = true; }
 
 // ---- replay cursor
 static uint32_t rp_draw, rp_cb;
@@ -781,6 +801,33 @@ static void dump_frames(void) {
     }
 }
 
+// A shared block (slots 0 and 1: a pass's camera, a light) that jumped against its draw's partner's: the partner can be
+// the same mesh drawn in another pass, whose camera it read (the first stage's guide clips and HUD: one camera's
+// translation swapping with another's, 63.5 <-> 54.8, every few frames). Its own history is the previous frame's
+// nearest block of the same stage, slot and size with no element past the jump distance: its offset, or -1 (a real
+// camera cut). maxd: that block's largest element change.
+static uint64_t s_repaired;  // (stats)
+static int64_t nearest_shared(const CbRec *cc, const float *b, float cut, float *maxd) {
+    int64_t best = -1;
+    float best_d = 0;
+    for (uint32_t k = 0; k < prev->ncbs; k++) {
+        const CbRec *pc = &prev->cbs[k];
+        if (pc->stage != cc->stage || pc->slot != cc->slot || pc->size != cc->size || pc->used != cc->used) continue;
+        const float *a = (const float *)(prev->bytes + pc->off);
+        float md = 0;
+        uint32_t q = 0, nf = cc->used / 4;
+        for (; q < nf; q++) {
+            if (!blendable(a[q], b[q])) continue;
+            float d = fabsf(b[q] - a[q]);
+            if (d > cut + 0.05f * fmaxf(fabsf(a[q]), fabsf(b[q]))) break;
+            if (d > md) md = d;
+        }
+        if (q == nf && (best < 0 || md < best_d)) best = (int64_t)pc->off, best_d = md;
+    }
+    *maxd = best_d;
+    return best;
+}
+
 bool interp_frame_end(bool log_next) {
     double t0 = plat_now_ns() / 1e6;
     s_frame_no++;
@@ -845,6 +892,8 @@ bool interp_frame_end(bool log_next) {
                 }
             }
             bool jump = far && (pc->maxd < 0 || maxd > 2.5f * pc->maxd + cut);
+            int64_t own = jump && cc->slot <= 1 ? nearest_shared(cc, b, cut, &maxd) : -1;
+            if (own >= 0) jump = false, cc->maxd = maxd, s_repaired++;
             q = jq;
             cc->snap = jump;
             if (jump) {
@@ -856,10 +905,10 @@ bool interp_frame_end(bool log_next) {
                         j, cc->stage, cc->slot, cc->size, q - 1, a[q - 1], b[q - 1]);
                 cuts++;
             }
-            cc->prev_off = pc->off;
+            cc->prev_off = own >= 0 ? own : (int64_t)pc->off;
             {   // the same buffer two frames back, through the partner's own partner (the toggle rule, interp_prepare)
                 int32_t y = p->pair;
-                if (y >= 0 && (uint32_t)y < prev2->ndraws && i < prev2->draws[y].ncb) {
+                if (own < 0 && y >= 0 && (uint32_t)y < prev2->ndraws && i < prev2->draws[y].ncb) {
                     CbRec *p2 = &prev2->cbs[prev2->draws[y].first_cb + i];
                     if (p2->stage == cc->stage && p2->slot == cc->slot && p2->size == cc->size) cc->prev2_off = p2->off;
                 }
@@ -1537,11 +1586,11 @@ void interp_log_stats(void) {
     int o = 0;
     for (int i = 0; i < 9; i++)
         if (s_cuts[i]) o += snprintf(cuts + o, sizeof cuts - (size_t)o, " %s %llu", cut_name[i], (unsigned long long)s_cuts[i]);
-    LOG("[interp] %s: %.1f game frames/s, draws %.0f/frame matched %.1f%% (by object %.0f/f, by content %.0f/f, by order %.1f/f, new objects %.1f/f), buffers blended %.0f/f jumps %.0f/f (+%.0f/f with their class), toggling elements %.0f/image, whole-number %.0f, wraps %.1f, discontinuities %.1f, lists switched %.1f, rotations %.0f (switched %.1f), split buffers %.1f/f, reused %.0f/image | images "
+    LOG("[interp] %s: %.1f game frames/s, draws %.0f/frame matched %.1f%% (by object %.0f/f, by content %.0f/f, by order %.1f/f, new objects %.1f/f), buffers blended %.0f/f jumps %.0f/f (+%.0f/f with their class), toggling elements %.0f/image, whole-number %.0f, wraps %.1f, discontinuities %.1f, lists switched %.1f, rotations %.0f (switched %.1f), split buffers %.1f/f, shared blocks re-paired %llu, reused %.0f/image | images "
         "%.1f/s planned (in-between %.1f/s), late %llu, skipped %llu, gave way %llu, no GPU time %llu | replay cpu %.2f ms avg %.2f max, gpu %.2f ms; "
         "present pass gpu %.2f ms; window image gpu %.2f ms; prep %.2f ms/f | latency %.1f ms | cuts:%s\n",
         game_level_name(), n / dt, s_draws / n, s_draws ? 100.0 * s_matched / s_draws : 0, s_id_pairs / n, s_content_pairs / n, s_order_pairs / n, s_new_objects / n, s_blended_cbs / n, s_cut_cbs / n, s_class_snaps / n, s_replays ? (double)s_toggled / s_replays : 0, s_replays ? (double)s_integral / s_replays : 0, s_replays ? (double)s_wraps / s_replays : 0, s_replays ? (double)s_discont / s_replays : 0, s_replays ? (double)s_onoff / s_replays : 0,
-        s_replays ? (double)s_rot_blocks / s_replays : 0, s_replays ? (double)s_rot_switch / s_replays : 0, (double)s_split / n, s_replays ? (double)s_reused / s_replays : 0,
+        s_replays ? (double)s_rot_blocks / s_replays : 0, s_replays ? (double)s_rot_switch / s_replays : 0, (double)s_split / n, (unsigned long long)s_repaired, s_replays ? (double)s_reused / s_replays : 0,
         s_shots / dt, s_mids / dt, (unsigned long long)s_late, (unsigned long long)s_skipped, (unsigned long long)s_gave_way, (unsigned long long)s_no_gpu,
         s_replays ? s_replay_cpu / s_replays : 0, s_replay_cpu_max, gn ? s_replay_gpu / gn : 0, cn ? s_compose_gpu / cn : 0,
         pres_min_prev > 0 ? pres_min_prev : 0,
@@ -1560,7 +1609,7 @@ void interp_log_stats(void) {
     if (st_replay_misses || st_replay_cb_miss)
         LOG("[interp] replay draw misses %llu/%llu, uniform misses %llu\n", (unsigned long long)st_replay_misses,
             (unsigned long long)st_replay_draws, (unsigned long long)st_replay_cb_miss);
-    s_frames = s_draws = s_matched = s_changed = s_cut_cbs = s_blended_cbs = s_id_pairs = s_order_pairs = s_content_pairs = s_new_objects = s_class_snaps = s_toggled = s_integral = s_wraps = s_discont = s_onoff = s_rot_blocks = s_rot_switch = s_split = s_reused = 0;
+    s_frames = s_draws = s_matched = s_changed = s_cut_cbs = s_blended_cbs = s_id_pairs = s_order_pairs = s_content_pairs = s_new_objects = s_class_snaps = s_toggled = s_integral = s_wraps = s_discont = s_onoff = s_rot_blocks = s_rot_switch = s_split = s_repaired = s_reused = 0;
     memset(s_cuts, 0, sizeof s_cuts);
     s_shots = s_mids = s_late = s_skipped = s_gave_way = s_no_gpu = s_replays = 0;
     s_replay_cpu = s_replay_cpu_max = s_prep = s_L = s_replay_gpu = s_compose_gpu = 0;

@@ -14,6 +14,10 @@
 #endif
 #include "nvn.h"
 #include "shader_prep.h"
+#include "../mods.h"
+#include "../paths.h"
+#include "../platform.h"
+#include "../shader_stamp.h"
 
 uint64_t shader_code_hash(const uint8_t *code, size_t n) {  // FNV-1a, 64-bit
     uint64_t h = 0xcbf29ce484222325ull;
@@ -626,6 +630,10 @@ static double ms_now(void) {
     return ts.tv_sec * 1e3 + ts.tv_nsec / 1e6;
 }
 
+static bool g_full;  // shader_prep_set_full
+void shader_prep_set_full(bool on) { g_full = on; }
+
+static void stamp_write(const char *romfs);
 static bool prep_run_locked(const char *romfs, void (*progress)(int done, int total), const volatile int *cancel);
 bool shader_prep_run(const char *romfs, void (*progress)(int done, int total), const volatile int *cancel) {
     static pthread_mutex_t one = PTHREAD_MUTEX_INITIALIZER;  // (one run at a time: the index, the translator)
@@ -640,7 +648,7 @@ static bool prep_run_locked(const char *romfs, void (*progress)(int done, int to
     char *list = shader_prep_list_read();
     uint64_t seen_game;
     char *seen = shader_seen_read(&seen_game);  // (the player's own list: after the shipped one, or alone)
-    bool all = getenv("LARECOMP_SHADER_PREBUILD") && atoi(getenv("LARECOMP_SHADER_PREBUILD"));
+    bool all = g_full || (getenv("LARECOMP_SHADER_PREBUILD") && atoi(getenv("LARECOMP_SHADER_PREBUILD")));
     if (!all && (!list || !*list) && (!seen || !*seen)) { free(list); free(seen); LOG("[shader] preparation: no variant list\n"); return false; }
     if (!renderer_prepare_begin()) { free(list); free(seen); LOG("[shader] preparation: no GPU device yet\n"); return false; }
     if (progress) progress(0, 0);  // (the total once the game files are indexed)
@@ -777,7 +785,10 @@ static bool prep_run_locked(const char *romfs, void (*progress)(int done, int to
         struct timespec ts = {0, 5000000};
         nanosleep(&ts, NULL);
     }
-    if (!(cancel && *cancel)) renderer_prepare_end();
+    if (!(cancel && *cancel)) {
+        renderer_prepare_end();
+        if (all) stamp_write(romfs);  // (every program built, the caches saved: what the stamp claims)
+    }
     PREP_REPORT(total);
 #undef PREP_REPORT
 #undef PREP_BUILT
@@ -791,6 +802,65 @@ static bool prep_run_locked(const char *romfs, void (*progress)(int done, int to
     LOG("[shader] prepared %d + %d seen before, not found %d%s%s (%d failed; index %zu shaders in %.0f ms, total %.0f ms)\n",
         prepared, prepared_seen, missing, cancel && *cancel ? ", " : "", cancel && *cancel ? "skipped" : "", failed, idx_n, t_idx, ms_now() - t0);
     return true;
+}
+
+// ------------------------------------------------------------------ the stamp (shader_stamp.h)
+#ifdef __APPLE__
+static bool stamp_expected(const char *game_dir, char *out, size_t n) { (void)game_dir, (void)out, (void)n; return false; }
+#else
+bool vk_gpu_identity(char *out, size_t n);  // runtime/nvn/vulkan/device.c
+// The game code library gamelib_present found, without loading it (runtime/gamelib.c). Declared here: gamelib.h is part
+// of the game code's id (Makefile GAMELIB_SRCS), so a release's own needs never change it - players would rebuild.
+bool gamelib_path(const char *game_dir, char *out, size_t size);
+
+static bool stamp_expected(const char *game_dir, char *out, size_t n) {
+    char gpu[512], runtime[256], exe[96] = "", code[256] = "", mods[1024] = "", list[24], path[1100];
+    if (!vk_gpu_identity(gpu, sizeof gpu)) return false;
+    snprintf(runtime, sizeof runtime, "%s translator %s cache %d", larecomp_version(), SHADER_TRANSLATOR_ID, SHADER_CACHE_VERSION);
+    struct stat st;
+    if (plat_exe_path(path, sizeof path) && !stat(path, &st))
+        snprintf(exe, sizeof exe, "%lld %lld", (long long)st.st_size, (long long)st.st_mtime);
+    char *l = shader_prep_list_read();
+    snprintf(list, sizeof list, "%016" PRIx64, shader_code_hash((const uint8_t *)(l ? l : ""), l ? strlen(l) : 0));
+    free(l);
+    if (gamelib_path(game_dir, path, sizeof path) && !stat(path, &st)) {
+        char id[128] = "", idp[1110];
+        snprintf(idp, sizeof idp, "%s.id", path);
+        FILE *f = fopen(idp, "rb");
+        if (f) { size_t k = fread(id, 1, sizeof id - 1, f); id[k] = 0; fclose(f); }
+        id[strcspn(id, "\r\n")] = 0;
+        snprintf(code, sizeof code, "%s %lld %lld", id, (long long)st.st_size, (long long)st.st_mtime);
+    }
+    ModName *on = NULL;
+    snprintf(path, sizeof path, "%s/mods", rt_data_root());
+    int nmods = mods_order(path, &on);
+    for (int i = 0; i < nmods; i++) snprintf(mods + strlen(mods), sizeof mods - strlen(mods), "%s%s", i ? "/" : "", on[i]);
+    free(on);
+    ShaderStampIn in = {runtime, exe, gpu, list, code, mods};
+    shader_stamp_format(out, n, &in);
+    return true;
+}
+#endif
+
+bool shader_prep_needed(const char *game_dir, char *why, size_t n) {
+    char want[2048], have[2048] = "";
+    if (!stamp_expected(game_dir, want, sizeof want)) {
+#ifdef __APPLE__
+        return snprintf(why, n, "not on this platform"), false;
+#else
+        return snprintf(why, n, "gpu"), true;  // (no Vulkan device to name: the game says so when it starts)
+#endif
+    }
+    shader_stamp_read(SHADER_STAMP_FILE, have, sizeof have);
+    return shader_stamp_diff(have, want, why, n);
+}
+
+static void stamp_write(const char *romfs) {
+    char dir[1100], want[2048];
+    snprintf(dir, sizeof dir, "%s/..", romfs);
+    if (!stamp_expected(dir, want, sizeof want)) return;
+    mkdir("cache", 0755);
+    LOG("[shader] %s\n", shader_stamp_write(SHADER_STAMP_FILE, want) ? "prepared in full: stamp written" : "stamp not written");
 }
 
 static void prep_step_progress(int done, int total) {

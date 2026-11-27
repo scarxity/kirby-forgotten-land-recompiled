@@ -2,6 +2,69 @@
 
 Versions are tagged `vX.Y.Z`. Small fixes bump the last number; features and large fixes bump the middle one.
 
+## 0.4.0
+
+**No freeze when a guide clip ends, shaders always prepared, smoother Frame Generation.**
+- **Guide clips:** when one of the first stage's small guide videos stopped early, the game froze for 1.5 to 3.7 s
+  (in three of the four 0.3.3 logs players sent). The movie decoder never told the game that the clip's picture was
+  ready, so the game waited 5 s for it. That wait was also why the clip was black on some PCs. Measured on an RTX 3050
+  Laptop over the guide route, 3 runs each: a 1.0 s freeze at every early stop before, none now, and the clip shows.
+- **Shaders:** the game now checks at every start that its shaders were prepared for this version, your graphics
+  driver, the game code and your mods. If they weren't, it prepares them in its own window before the game starts,
+  however it was started. This takes about 15 to 18 minutes, once after each update or driver change, and can't be
+  skipped. Two of the four 0.3.3 logs players sent came from installs that played with almost no shaders prepared.
+- **Frame Generation:** the in-between image and the game's own image were shown one display refresh apart, so at
+  120 or 144 Hz the in-between showed for 7 ms and the game's image for 26 ms. Motion jumped and stopped every frame.
+  The images are now spaced evenly over the game's frame. Measured on an RTX 3050 Laptop over the same route: in-between
+  images went from 7 to 27-29 a second, and frames shown without one from 75% to under 1% (5 runs on the release zip:
+  29.2-29.5 a second, 0.1-0.6% without one, no image held over 50 ms). 60 Hz displays
+  now get in-between images too (they had none).
+
+Unzip over 0.3.3: the game code from 0.3.3 is used as it is, so it isn't rebuilt. The shaders are prepared again once,
+because this version changes the program and the shader list. The launcher shows **Set up** for it, and a game
+started another way prepares them itself before it starts.
+
+### Added
+- Linux: `ForgottenLandRecomp-0.4.0-Linux-x86_64.AppImage`, **untested by play**. It builds and passes the game-free
+  tests in a container, but nobody has played it on Linux yet. Set it up once with `--prepare <your game folder>` in a
+  terminal, then start the AppImage to play ([docs/linux.md](docs/linux.md)). It uses saschb2b's Linux fixes from
+  [#8](https://github.com/scarxity/kirby-forgotten-land-recompiled/issues/8). There is no macOS build in this version
+- 333 shader variant records from the logs four players sent with 0.3.3, and 3 from this version's test plays (the
+  list goes from 2141 to 2477 records)
+- The build stops if the shader list doesn't make it into the game whole (a test build of this version had it empty)
+- A device loss now logs which GPU memory the fault hit, on NVIDIA too, for the next crash report
+
+### Changed
+- The aspect ratio setting is gone. Its only other choice, Unlocked, has done nothing since 0.3.0: the game is drawn
+  at 16:9. The first-start question about it is gone too, and an old `larecomp.ini` line for it is ignored
+- A stage's first frame takes about half as long: its textures are converted on 1 or 2 worker threads while the
+  frame is recorded. On an RTX 3050 Laptop the render thread's time for that frame went from 123-159 ms to 44-60 ms
+
+### Fixed
+- AMD graphics cards on Linux (RADV) lost the device on the first frames that draw text (RX 9060 XT, Mesa 26.2). The
+  fix is saschb2b's ([#21](https://github.com/scarxity/kirby-forgotten-land-recompiled/pull/21))
+- A texture slot with no texture could be drawn with a destroyed placeholder image after the game's views were
+  recycled
+- Frame Generation skipped the in-between image for most frames while a guide clip played, and for some camera
+  changes that weren't cuts
+- A minimised game window wrote a line to `game.log` every frame (about 55 a second, 30,000 lines while shaders were
+  prepared) and made the GPU wait for all its work twice a frame. It now draws nothing until the window is back
+
+### Known issues
+- The device-lost crashes in [#10](https://github.com/scarxity/kirby-forgotten-land-recompiled/issues/10) and
+  [#17](https://github.com/scarxity/kirby-forgotten-land-recompiled/issues/17) are not reproduced. This version fixes
+  the AMD device loss above and the destroyed placeholder image, but neither is known to be those crashes
+- A stage's first frame can still build one to five pipelines as it loads: up to about 0.1 s on Level 2's first stage
+  (measured by jumping straight to the stage on an RTX 3050 Laptop)
+- The Linux AppImage has not been played on Linux
+- Frame Generation is still experimental. It was measured and played on one laptop (RTX 3050, 144 Hz): 60 images a
+  second in the first area. It needs the game at a steady 30, so where the game falls below that it turns itself off
+- Busy areas can still drop below 30 when the CPU is the limit, whatever the graphics card: on an i7-11800H laptop the
+  area after the first stage's green forest took 52-88 ms a frame on the render thread (18-23 fps)
+- The shipped list covers 33 stages from their first step and what players sent. The town, the world map, the
+  arena's other screens and Level 3's third stage may still pause once for a rare shader variant
+- Intel GPUs are untested on 0.3.x and 0.4.0
+
 ## 0.3.3
 
 **No shader freezes in our tests, even on a first visit.**

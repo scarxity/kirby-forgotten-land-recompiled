@@ -10,7 +10,7 @@
 // which finds them by content at first use (code addresses differ from run to run). Anything the list misses still
 // compiles at first use (asynchronously, as before) and is logged as a first visit.
 //
-// The start screen runs it once the game files are set up or updated (runtime/ui/launcher.mm: a progress bar and
+// The start screen runs it once the game files are set up or updated (runtime/ui/launcher.mm: a progress bar, no
 // Skip), and on every later start in the background (warm system shader caches: well under a second here); a PLAY
 // before that is done shows the same bar. One run at a time. Later
 // (phase 2): a Metal binary archive and periodic Vulkan pipeline cache saves (renderer_prepare_end), and a tag that
@@ -126,6 +126,14 @@ void renderer_prepare_end(void);  // all builds done (e.g. keep the pipeline cac
 bool shader_prep_run(const char *romfs, void (*progress)(int done, int total), const volatile int *cancel);
 // (LARECOMP_SHADER_PREP=1, tests) the same at game start, before the game's first frame: runtime/nvn/objects.c
 void shader_prep_boot(const char *romfs);
+
+// ---- the shader stamp (runtime/shader_stamp.h): whether the shaders were prepared in full for this exact runtime,
+// translator, shipped list, game code (the library in game_dir), mods and GPU driver. A full preparation (every program
+// of the game files: shader_prep_set_full, or LARECOMP_SHADER_PREBUILD=1) that is not cancelled writes it; Vulkan
+// builds only (elsewhere nothing is ever "needed").
+// true: prepare again; why: the first field that changed ("none": never prepared, "gpu": the GPU or driver, ...)
+bool shader_prep_needed(const char *game_dir, char *why, size_t n);
+void shader_prep_set_full(bool on);  // (the next run is a full one, as LARECOMP_SHADER_PREBUILD=1 makes it)
 
 // ---- the shader caches' tag (Metal binary archive, Vulkan pipeline cache): this build, the translator, the prepared
 // objects' format and the GPU / driver; a cache with another tag is discarded (rebuilt as the game runs)

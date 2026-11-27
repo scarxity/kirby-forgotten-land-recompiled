@@ -15,7 +15,6 @@ const offCorners = [['off', 'Off'], ['top_left', 'Top left'], ['top_right', 'Top
 // file onto an option. `needs` greys the row out while another row has the wrong value, as the menu does. `pref` rows
 // are the launcher's own (launcher-prefs.json), not the game's.
 export const ROWS = [
-  { key: 'aspect', label: 'Aspect ratio', tab: 'display', kind: 'choice', options: [['unlocked', 'Unlocked'], ['original', 'Original 16:9']], default: 'original' },
   { key: 'fullscreen', label: 'Fullscreen', tab: 'display', kind: 'toggle', default: '0' },
   { key: 'show_fps', label: 'Show FPS', tab: 'display', kind: 'choice', options: offCorners, default: 'off', read: (raw) => (parseInt(raw, 10) ? 'top_right' : 'off') },
   { key: 'fps_advanced', label: 'Show advanced information', tab: 'display', kind: 'toggle', default: '0', needs: { key: 'show_fps', not: 'off' } },

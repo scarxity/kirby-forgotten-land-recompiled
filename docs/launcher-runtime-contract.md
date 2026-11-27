@@ -29,6 +29,7 @@ copy and the RomFS checks) and `runtime/gamebuild.c` (the game code). The search
 | `extracted --play` | none (see "A game run") | see "A game run" |
 | `--check <folder>` | one line, `ok` or `failed <reason>` | 0 for `ok`, 1 for `failed` |
 | `--status` | one line, `ready`, `build` or `none` | 0 |
+| `--shaders-status` | one line, `ready` or `prepare <what changed>` | 0 |
 | `--setup <folder>` | `phase <name> <0..1> [(<slow file>, <n> min)]` lines, then `done` or `failed <reason>` | 0 for `done`, 1 for `failed` |
 | `--rebuild-code` | the same lines as `--setup` | the same |
 | `--prepare <folder>` | `progress <0..1> <text>` lines, ending with `progress 1 Ready` | 0, or the failure code of the table below |
@@ -77,6 +78,20 @@ What is set up in the data root:
 The launcher runs it once per change of the modification times of what it reads: the runtime exe,
 `extracted/lasgame.dll`, `extracted/lasgame.dll.id`, the folder `extracted/romfs` and `extracted/romfs.bin`. So the
 setup must write `lasgame.dll.id` last, after `lasgame.dll`.
+
+### `--shaders-status`
+Whether the shaders were prepared for this exact runtime, so Play can start at once. It is the check `--play` makes
+(below), so a launcher that asks and the game that checks cannot disagree: **the launcher keeps no rule of its own**.
+It prints `ready`, or `prepare <field>` where `<field>` is the first thing that changed: `none` (no stamp: never
+prepared), `runtime` (version, shader translator, cache format), `exe` (the runtime file's size or time), `gpu` (the
+GPU or its driver version: the pipeline cache's own key), `list` (the shipped variant list), `code` (the game code
+library: id, size, time) or `mods` (the mods switched on, in order). Unlike `--status` it loads the GPU driver (a
+Vulkan instance, no window), about a second at most, so the Tauri launcher asks again only when a file it reads changes
+(the runtime, the game code, the stamp, the mods).
+
+The stamp is `cache/shaders-prepared.txt` in the data root (`runtime/shader_stamp.h`): one `<field> <value>` line per
+field above. **Only the game writes it**, at the end of a full preparation (every program of the game files, not
+cancelled, the caches saved); a launcher never writes it. Wiping `cache/` wipes it with the caches it vouches for.
 
 ### `--setup <folder>` and `--rebuild-code`
 `--setup` finds the game as `--check` does, with the same verdict. Before it removes anything it refuses a RomFS it
@@ -141,6 +156,17 @@ The codes are the enum in `runtime/setup_cli.c` (`NOT_FOUND` = 8, in the order o
 ## A game run
 Both launchers start `ForgottenLandRecomp.exe extracted --play` (RecompLauncher adds nothing; the Tauri launcher
 adds the environment below). `--play` goes straight to the game, never the LAS start screen.
+
+**The game prepares its own shaders.** Before it boots, `--play` makes the `--shaders-status` check. When the stamp does
+not match (a new release or runtime, a game code rebuild, a new shipped list, a mod switched, a GPU driver update, or
+never prepared), the game opens its window with a progress bar ("Preparing shaders", no Skip) over the title picture,
+prepares every shader of the game files (`[shader] preparing: N%` lines in the log, every 5%), writes the stamp, and
+boots in that same window. So a play started by RecompLauncher's start command, a shortcut or the launcher never plays with
+unprepared shaders; the launcher's and `--prepare`'s own "Preparing shaders" step only makes it happen earlier, in
+their window. It can't be skipped, so every player plays with every shader prepared; closing the window quits with
+the stamp unwritten, so the next start prepares again. Not run: a test run (`LARECOMP_NO_LAUNCHER`
+or `LARECOMP_INPUT` set), and the preparation run itself (`LARECOMP_SHADER_PREP=1`, the hidden child of the Tauri
+launcher and of `--prepare`).
 
 - Working directory and `LARECOMP_DATA_ROOT`: the data root.
 - `LARECOMP_GAME_LIB=<data root>\extracted\lasgame.dll` (Tauri launcher; RecompLauncher relies on the default place).

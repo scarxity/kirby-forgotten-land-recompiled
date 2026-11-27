@@ -1,13 +1,13 @@
 #!/bin/bash
 # tools/linux/package.sh <x86_64|aarch64> (inside a build container, tools/linux/appimage.sh: the AppImage's own arch
-# when the host has it, else amd64 cross-compiling): the game built
-# against build/linux/<arch>/deps and the seed generator helper (tools/linux/rando_helper.sh) put together
-# as an AppDir and packed by appimagetool: build/dist/LAS Recomp-<version>-linux-<arch>.AppImage
-# (named like the macOS / Windows releases; GitHub shows it as LAS.Recomp-<version>-linux-<arch>.AppImage).
-# Shipped next to the executable (usr/bin, where runtime/paths.c rt_resource looks): rando-gen/, what the start screen
-# builds the game code with on the player's machine (runtime/gamebuild.c: lasgen/, zig/ from tools/fetch_zig.sh,
-# gamelib-src/), the window icon, the start screen font. No game code: that's built from the player's own files. usr/lib: the libraries from deps/ only - glibc, libstdc++, the Vulkan loader and the
-# GPU drivers are the system's (a bundled loader would not find the user's drivers). No game files or fonts.
+# when the host has it, else amd64 cross-compiling): the runtime built against build/linux/<arch>/deps and the game
+# code generator (tools/linux/gen_helper.sh) put together as an AppDir and packed by appimagetool:
+# build/dist/ForgottenLandRecomp-<version>-Linux-<arch>.AppImage
+# Shipped next to the executable (usr/bin, where runtime/paths.c rt_resource looks): lasgen/ and zig/, what the setup
+# builds the game code with on the player's machine (runtime/gamebuild.c), gamelib-src/, the window icon, the fonts,
+# README.txt and licenses/. No game code and no game files: the game code is built from the player's own files.
+# usr/lib: the libraries from deps/ only - glibc, libstdc++, the Vulkan loader and the GPU drivers are the system's (a
+# bundled loader would not find the user's drivers).
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 ARCH=$1
@@ -15,53 +15,52 @@ L=$PWD/build/linux/$ARCH
 P=$L/deps
 B=$L/game
 APPDIR=$L/AppDir
-VERSION=$(sed -n 's/^#define LARECOMP_VERSION "\(.*\)"/\1/p' runtime/ui/launcher.mm)
-OUT="build/dist/LAS Recomp-$VERSION-linux-$ARCH.AppImage"
+VERSION=$(sed -n 's/^GAME_VERSION := //p' game/game.mk)
+EXE_NAME=$(sed -n 's/^EXE_NAME *:= *//p' game/game.mk)
+OUT="build/dist/$EXE_NAME-$VERSION-Linux-$ARCH.AppImage"
 JOBS=$(nproc)
 
 tools/linux/build_deps.sh "$ARCH"
 
-CROSSCC=clang
 if [ "$ARCH" != "$(uname -m)" ]; then
     : "${SYSROOT:?cross build: SYSROOT (the arm64 root filesystem)}"
-    CROSSCC="clang --target=$ARCH-linux-gnu --sysroot=$SYSROOT -fuse-ld=lld"
     MAKEARGS=(ARCH="$ARCH" SYSROOT="$SYSROOT")
 else
     MAKEARGS=(ARCH="$ARCH")
 fi
 
 # the app alone (the game code is built on the player's machine)
-make -j"$JOBS" B="$B" DEPS="$P" SHADERC=-lshaderc_shared "${MAKEARGS[@]}" "$B/lasrecomp"
-if nm "$B/lasrecomp" | grep ' f_70' >/dev/null; then echo "$B/lasrecomp has game code linked in"; exit 1; fi
+make -j"$JOBS" B="$B" DEPS="$P" SHADERC=-lshaderc_shared "${MAKEARGS[@]}" "$B/$EXE_NAME"
+if nm "$B/$EXE_NAME" | grep ' f_70' >/dev/null; then echo "$B/$EXE_NAME has game code linked in"; exit 1; fi
 ZIG_TARGET=$ARCH-linux tools/fetch_zig.sh
 
 # ---- AppDir
 rm -rf "$APPDIR" && mkdir -p "$APPDIR/usr/bin" "$APPDIR/usr/lib"
-cp "$B/lasrecomp" "$APPDIR/usr/bin/"
-llvm-strip --strip-debug "$APPDIR/usr/bin/lasrecomp"  # (symbols stay: crash backtraces name functions)
+cp "$B/$EXE_NAME" "$APPDIR/usr/bin/"
+llvm-strip --strip-debug "$APPDIR/usr/bin/$EXE_NAME"  # (symbols stay: crash backtraces name functions)
 cp docs/icon/icon_1024.png "$APPDIR/usr/bin/icon.png"
-cp third_party/fonts/Baloo2/Baloo2-SemiBold.ttf "$APPDIR/usr/bin/"  # (start screen font, OFL)
-cp third_party/fonts/Baloo2/OFL.txt "$APPDIR/usr/bin/Baloo2-OFL.txt"
-cp third_party/fonts/BIZUDPGothic/BIZUDPGothic-Regular.ttf "$APPDIR/usr/bin/"  # (game text font on Linux, OFL)
-cp third_party/fonts/BIZUDPGothic/OFL.txt "$APPDIR/usr/bin/BIZUDPGothic-OFL.txt"
+cp third_party/fonts/Baloo2/Baloo2-SemiBold.ttf "$APPDIR/usr/bin/"  # (in-game menu font, OFL)
 cp third_party/fonts/DejaVu/DejaVuSans.ttf third_party/fonts/DejaVu/DejaVuSans-Bold.ttf "$APPDIR/usr/bin/"  # (last-resort fonts, free license)
-cp third_party/fonts/DejaVu/LICENSE "$APPDIR/usr/bin/DejaVu-LICENSE.txt"
-cp README.md LICENSE "$APPDIR/usr/bin/"  # (licenses and source links of the bundled components: README "License")
-[ -d "$L/helper/rando-gen" ] || { echo "no seed generator helper: tools/linux/rando_helper.sh $ARCH first"; exit 1; }
-cp -R "$L/helper/rando-gen" "$APPDIR/usr/bin/"
-[ -d "$L/helper/lasgen" ] || { echo "no game code generator helper: tools/linux/rando_helper.sh $ARCH first"; exit 1; }
+cp LICENSE "$APPDIR/usr/bin/LICENSE.txt"
+cp recomplauncher.json "$APPDIR/usr/bin/"
+[ -d "$L/helper/lasgen" ] || { echo "no game code generator helper: tools/linux/gen_helper.sh $ARCH first"; exit 1; }
 cp -R "$L/helper/lasgen" build/zig "$APPDIR/usr/bin/"
 mkdir "$APPDIR/usr/bin/gamelib-src"
 cp runtime/cpu.h runtime/simd.h runtime/simd_fp.h runtime/gamelib.h tools/gamelib_entry.c runtime/hle/hle_symbols.txt \
    "$APPDIR/usr/bin/gamelib-src/"
 cp tools/linux/AppRun "$APPDIR/" && chmod +x "$APPDIR/AppRun"
-cp tools/linux/lasrecomp.desktop "$APPDIR/"
-cp docs/icon/icon_1024.png "$APPDIR/lasrecomp.png" && ln -sf lasrecomp.png "$APPDIR/.DirIcon"
+sed "s/__EXE__/$EXE_NAME/" tools/linux/ForgottenLand.desktop > "$APPDIR/ForgottenLand.desktop"
+cp docs/icon/icon_1024.png "$APPDIR/ForgottenLand.png" && ln -sf ForgottenLand.png "$APPDIR/.DirIcon"
+# (the FFmpeg version and configure line it was built with: what the LGPL asks to make it rebuildable)
+sed -e "s|__FFVER__|$(cat "$P/ffmpeg-version.txt")|g" -e "/__FFCONF__/{r $P/ffmpeg-configure.txt" -e "d}" -e "s|__VERSION__|$VERSION|g" \
+    docs/release-README-linux.txt > "$APPDIR/usr/bin/README.txt"
+! grep '__[A-Z]*__' "$APPDIR/usr/bin/README.txt"
+tools/linux/licenses.sh "$ARCH" "$APPDIR/usr/bin/licenses"
 
-# libraries: what lasrecomp needs (DT_NEEDED, recursively) that deps/ provides; anything else must be a system one
+# libraries: what the runtime needs (DT_NEEDED, recursively) that deps/ provides; anything else must be a system one
 needed() { readelf -d "$1" | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p'; }
 SYSTEM_LIBS='^(libc|libm|libdl|libpthread|librt|libresolv|libstdc\+\+|libgcc_s|libvulkan)\.so|^ld-linux'
-todo=("$APPDIR/usr/bin/lasrecomp")
+todo=("$APPDIR/usr/bin/$EXE_NAME")
 while [ ${#todo[@]} -gt 0 ]; do
     f=${todo[0]}; todo=("${todo[@]:1}")
     for n in $(needed "$f"); do
@@ -75,10 +74,13 @@ while [ ${#todo[@]} -gt 0 ]; do
         fi
     done
 done
-patchelf --set-rpath '$ORIGIN/../lib' "$APPDIR/usr/bin/lasrecomp"
+patchelf --set-rpath '$ORIGIN/../lib' "$APPDIR/usr/bin/$EXE_NAME"
 if ls "$APPDIR/usr/lib" | grep -iE 'x264|x265|xvid|postproc|vulkan'; then  # (no GPL codecs, no Vulkan loader)
     echo "package: library that must not ship"; exit 1
 fi
+ls "$APPDIR/usr/lib" | grep -q '^libswresample\.so' || { echo "package: libswresample is not bundled (the Opus decoder needs it)"; exit 1; }
+! find "$APPDIR" -iname '*.nso' -o -iname '*.nca' -o -iname '*.nsp' -o -iname '*.xci' -o -iname '*.keys' -o -iname 'romfs*' \
+    -o -iname 'exefs' -o -iname 'lasgame.*' -o -iname 'generated' | grep .  # (nothing of the game)
 echo "bundled: $(ls "$APPDIR/usr/lib" | tr '\n' ' ')"
 
 # ---- AppImage (appimagetool runs extracted: no FUSE in the container)

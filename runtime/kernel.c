@@ -644,9 +644,59 @@ static _Atomic uint64_t svc_wait_ns[32][0x80], svc_calls[32][0x80];
 static int prof_svc = -1;
 
 static void svc_entry(Cpu *c, uint32_t imm, uint64_t pc);
+
+// (diagnostics) this thread's longest kernel wait since its last kernel_take_longest_wait: the "[slow]" frame line
+// (nvn/slowframe.c) names what the presenting thread waited on when a frame took long with no work in it.
+static __thread struct { uint64_t ns, obj, lr[4]; uint32_t svc; } t_longest;
+static void note_wait(const Cpu *c, uint32_t imm, uint64_t x1, uint64_t x2, uint64_t lr, uint64_t ns) {
+    if (ns <= t_longest.ns) return;
+    t_longest.ns = ns, t_longest.svc = imm, t_longest.obj = x1;
+    if (imm == 0x18) t_longest.obj = x2 ? *(const uint32_t *)(uintptr_t)x1 : 0;  // (the first handle)
+    t_longest.lr[0] = lr;
+    uint64_t fp = c->x[29];
+    for (int i = 1; i < 4; i++) {
+        bool ok = fp >= STACK_BASE && fp < STACK_BASE + STACK_SIZE && !(fp & 15);
+        t_longest.lr[i] = ok ? *(const uint64_t *)(uintptr_t)(fp + 8) : 0;
+        uint64_t up = ok ? *(const uint64_t *)(uintptr_t)fp : 0;
+        fp = up > fp ? up : 0;
+    }
+}
+int kernel_take_longest_wait(char *b, size_t n, uint64_t min_ns) {
+    int r = 0;
+    if (t_longest.ns >= min_ns) {
+        const char *what = t_longest.svc == 0x18 ? "WaitSynchronization" : t_longest.svc == 0x0B ? "SleepThread" :
+                           t_longest.svc == 0x1C ? "condition variable" : t_longest.svc == 0x1A ? "mutex" : "address arbiter";
+        char obj[96] = "";
+        if (t_longest.svc == 0x18) {
+            pthread_mutex_lock(&g_klock);
+            KObject *o = handle_get((uint32_t)t_longest.obj);
+            if (o && o->type == KOBJ_THREAD)
+                snprintf(obj, sizeof obj, " on handle %llx: thread %llu entry %llx", (unsigned long long)t_longest.obj,
+                         (unsigned long long)((KThread *)o)->id, (unsigned long long)((KThread *)o)->entry);
+            else
+                snprintf(obj, sizeof obj, " on handle %llx (type %d)", (unsigned long long)t_longest.obj, o ? (int)o->type : 0);
+            pthread_mutex_unlock(&g_klock);
+        } else if (t_longest.svc != 0x0B) {
+            snprintf(obj, sizeof obj, " at %llx", (unsigned long long)t_longest.obj);
+        }
+        r = snprintf(b, n, "%s %.0f ms%s, guest callers %llx %llx %llx %llx", what, t_longest.ns / 1e6, obj,
+                     (unsigned long long)t_longest.lr[0], (unsigned long long)t_longest.lr[1],
+                     (unsigned long long)t_longest.lr[2], (unsigned long long)t_longest.lr[3]);
+    }
+    t_longest.ns = 0;
+    return r;
+}
+
 void rt_svc(Cpu *c, uint32_t imm, uint64_t pc) {
     rt_unwind_point();
-    svc_entry(c, imm, pc);
+    if (imm == 0x0B || imm == 0x18 || imm == 0x1A || imm == 0x1C || imm == 0x34) {
+        uint64_t x1 = imm == 0x34 ? c->x[0] : c->x[1];  // (the handles, the key, the mutex or the arbiter's address)
+        uint64_t x2 = c->x[2], lr = c->x[30], t0 = plat_now_ns();
+        svc_entry(c, imm, pc);
+        note_wait(c, imm, x1, x2, lr, plat_now_ns() - t0);
+    } else {
+        svc_entry(c, imm, pc);
+    }
     rt_unwind_point();
 }
 

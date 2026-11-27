@@ -25,7 +25,7 @@ launcher refuses other versions and the update when you pick the folder.
 
 ## Download
 
-Get `ForgottenLandRecomp-0.3.0-Windows-x64.zip` from the
+Get `ForgottenLandRecomp-0.4.0-Windows-x64.zip` from the
 [latest release](https://github.com/scarxity/kirby-forgotten-land-recompiled/releases/latest), unzip it, open
 `ForgottenLandLauncher.exe`, pick the folder that holds your `exefs` and `romfs`, then Build and Play. The zip holds
 tools only. The game code is built on your PC from your own copy, in about 7 minutes on a 16-thread PC.
@@ -50,6 +50,25 @@ example. The zip's `README.txt` has the details.
 
 The zip also carries a `recomplauncher.json`, so [RecompLauncher](https://recomplauncher.com) can set the game up
 from the same folder, show its settings and start it.
+
+### Linux
+
+`ForgottenLandRecomp-0.4.0-Linux-x86_64.AppImage` is on the same release page. It is **untested by play**: it builds
+and passes the game-free tests in a container, but nobody has played it on Linux yet. Feedback is welcome in
+[#8](https://github.com/scarxity/kirby-forgotten-land-recompiled/issues/8), where it started.
+
+It needs 64-bit Linux with glibc 2.35 or newer (Ubuntu 22.04 or newer), an x86-64 CPU with AVX2, a Vulkan 1.3 driver
+(Mesa RADV or ANV, or NVIDIA's) and 6.5 GB of free disk. The AppImage has no window to set the game up. Set it up once
+in a terminal, then start the AppImage to play:
+
+```sh
+chmod +x ForgottenLandRecomp-*.AppImage
+./ForgottenLandRecomp-*.AppImage --prepare /path/to/the/folder/with/exefs/and/romfs   # once: game code, then shaders
+./ForgottenLandRecomp-*.AppImage                                                      # play
+```
+
+Everything it writes goes to `~/.local/share/ForgottenLandRecomp`. RecompLauncher can also start it, through the same
+`recomplauncher.json` (untested). [docs/linux.md](docs/linux.md) has the details. There is no macOS build.
 
 ## Layout
 
@@ -151,6 +170,9 @@ make dist           # build/dist/ForgottenLandRecomp-<version>-Windows-x64.zip
 - Ryujinx (MIT, [its licence](third_party/ryujinx/LICENSE.txt)): the reverb and delay effects follow its algorithms,
   with two defects fixed, and the shader translator follows its decoding of a few instructions.
 - The launcher's layout follows [Recompia](https://github.com/Dittobyte/Recompia)'s. Its code and art are original.
+- saschb2b fixed the device loss on AMD's RADV driver
+  ([#21](https://github.com/scarxity/kirby-forgotten-land-recompiled/pull/21)) and found the fixes the Linux build
+  needed ([#8](https://github.com/scarxity/kirby-forgotten-land-recompiled/issues/8)).
 - Lhw-Arthas fixed the Chinese language codes
   ([#7](https://github.com/scarxity/kirby-forgotten-land-recompiled/pull/7)).
 

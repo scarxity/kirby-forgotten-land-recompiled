@@ -1,5 +1,6 @@
 // Vulkan textures: NVN formats, images, change-detected uploads from guest memory, views and samplers
 // (counterpart of the texture half of metal.m and the view helpers of renderer.m).
+#include <SDL3/SDL_cpuinfo.h>
 #include <SDL3/SDL_timer.h>
 #include <float.h>
 #include <math.h>
@@ -16,6 +17,8 @@
 #include "../tex_hash.h"
 #include "../renderer.h"
 #include "../output_scale.h"
+
+void tex_fill_flush(void);  // (below: the uploads' fills on worker threads)
 
 // ================================================================== formats
 typedef struct { VkFormat vf; uint8_t expand_rgb, alpha_one; } VkFmt;
@@ -568,6 +571,7 @@ static void live_remove(TexBackend *b) {
 }
 
 static TexBackend *tex_backend(NvnTexture *t) {
+    interp_texture_used(t);
     TexBackend *b = t->backend;
     if (b) {
         if (b->scalable && (b->ax != tex_alloc_x(b) || b->ay != tex_alloc_y(b))) {  // output resolution changed: reallocate
@@ -581,18 +585,22 @@ static TexBackend *tex_backend(NvnTexture *t) {
     b->scalable = tex_scalable(t);
     b->shadow = tex_shadow(t);
     b->ao = b->scalable && !b->shadow && tex_ao(t);
+    extern void slow_note_image_ns(uint64_t ns);  // (slowframe.h)
+    uint64_t t_image = SDL_GetTicksNS();
     create_image(t, b);
+    slow_note_image_ns(SDL_GetTicksNS() - t_image);
     t->backend = b;
     live_add(t, b);
     return b;
 }
 
 void backend_texture_destroyed(NvnTexture *t) {
+    tex_fill_flush();  // (a queued hash writes into the backend)
     TexBackend *b = t->backend;
     extern NvnTexture *g_vk_shown;  // (device.c: the last frame shown, copied when frames are held for shader builds)
     if (t == g_vk_shown) g_vk_shown = NULL;
-    extern void interp_texture_destroyed(void);
-    interp_texture_destroyed();  // (frame interpolation: a texture the frame may have drawn with went away)
+    extern void interp_texture_destroyed(const void *t);
+    interp_texture_destroyed(t);  // (frame interpolation: a texture the frame may have drawn with went away)
     if (b) {
         extern void vk_alias_texture_destroyed(NvnTexture *t);  // (exec.c copy aliases: a source's contents handed over)
         vk_alias_texture_destroyed(t);
@@ -606,6 +614,7 @@ void backend_texture_destroyed(NvnTexture *t) {
 
 // Reboot (device.c backend_reset; GPU idle): every game texture and its views go.
 void vk_textures_reset(void) {
+    tex_fill_flush();
     int n = g_nlive;
     extern void vk_alias_reset(void);
     vk_alias_reset();
@@ -664,6 +673,164 @@ static void upload_pending(TexBackend *b) {
                 rec_CmdCopyBufferToImage(cb, s.buf, b->image, VK_IMAGE_LAYOUT_GENERAL, 1, &rg);
 }
 
+// ---- a level's fill (block-linear -> linear, RGB8 -> RGBA8, or CPU block decode), on the render thread or, for the
+// big levels, on a few worker threads. A stage's first frame uploads ~120-190 MB of textures at once, which took the
+// render thread 100-400 ms; the fills only read guest memory and write their own span of the transient ring, so they
+// run while the render thread goes on recording, and vk_submit_extra waits for them (tex_fill_flush) before the
+// submission that reads the ring leaves.
+typedef struct {
+    const uint8_t *src;
+    uint8_t *dst;
+    uint64_t stride;  // linear textures: the guest row pitch
+    uint32_t wb, hb, d, bpb, bh_log2, bd_log2, w, h;
+    uint8_t kind, linear, astc_bw, astc_bh, astc_srgb, bc;
+    struct TexBackend *hash_to;  // FILL_HASH: the texture whose data_hash / sample_hash these are (src, hash_bytes long)
+    uint64_t hash_bytes, out_bytes;
+    int chain;
+    bool sample;
+} Fill;
+enum { FILL_COPY, FILL_EXPAND_RGB, FILL_DECODE, FILL_HASH };
+
+static void fill_level(const Fill *f) {
+    if (f->kind == FILL_HASH) {  // (the texture's first upload: nothing reads the hashes before the flush)
+        f->hash_to->data_hash = tex_hash_full(f->src, f->hash_bytes);
+        if (f->sample) f->hash_to->sample_hash = tex_hash_sample(f->src, f->hash_bytes);
+        return;
+    }
+    uint32_t row = f->wb * f->bpb;
+    if (f->kind == FILL_DECODE) {  // blocks -> linear block rows -> RGBA8 (BC6H: RGBA16F) texels
+        uint8_t *blocks = malloc((uint64_t)row * f->hb);
+        if (f->linear) for (uint32_t y = 0; y < f->hb; y++) memcpy(blocks + (uint64_t)y * row, f->src + (uint64_t)y * f->stride, row);
+        else tegra_deswizzle(f->src, blocks, f->wb, f->hb, 1, f->bpb, f->bh_log2, f->bd_log2);
+        if (f->bc) bc_decode(f->bc, blocks, f->w, f->h, f->dst);
+        else astc_decode_ldr(blocks, f->w, f->h, f->astc_bw, f->astc_bh, f->astc_srgb, f->dst);
+        free(blocks);
+        return;
+    }
+    uint8_t *lin = f->kind == FILL_EXPAND_RGB ? malloc((uint64_t)row * f->hb * f->d) : f->dst;
+    if (f->linear) for (uint32_t y = 0; y < f->hb; y++) memcpy(lin + (uint64_t)y * row, f->src + (uint64_t)y * f->stride, row);
+    else tegra_deswizzle(f->src, lin, f->wb, f->hb, f->d, f->bpb, f->bh_log2, f->bd_log2);
+    if (f->kind == FILL_EXPAND_RGB) {  // RGB8 -> RGBA8
+        uint8_t *o = f->dst;
+        uint64_t n = (uint64_t)f->wb * f->hb * f->d;
+        for (uint64_t i = 0; i < n; i++) { o[i * 4] = lin[i * 3]; o[i * 4 + 1] = lin[i * 3 + 1]; o[i * 4 + 2] = lin[i * 3 + 2]; o[i * 4 + 3] = 255; }
+        free(lin);
+    }
+}
+
+#define FILL_MIN_BYTES (128u << 10)  // (smaller levels are filled at once: a hand-off costs more than they do)
+static pthread_mutex_t fill_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t fill_wake = PTHREAD_COND_INITIALIZER, fill_done = PTHREAD_COND_INITIALIZER;
+static Fill *fill_q;  // (a Fill with chain > 0 is followed by that many that the same worker runs after it, in order)
+static int fill_cap, fill_n, fill_next, fill_left, fill_workers = -1;  // (queued, taken, not finished: in Fills)
+
+// (fill_lock held) the next queued run taken and run; false: none queued
+static bool fill_run_one(void) {
+    if (fill_next >= fill_n) return false;
+    int n = 1 + fill_q[fill_next].chain;
+    Fill *run = malloc((size_t)n * sizeof *run);  // (the queue may move while this runs)
+    memcpy(run, &fill_q[fill_next], (size_t)n * sizeof *run);
+    fill_next += n;
+    pthread_mutex_unlock(&fill_lock);
+    for (int i = 0; i < n; i++) fill_level(&run[i]);
+    free(run);
+    pthread_mutex_lock(&fill_lock);
+    fill_left -= n;
+    if (!fill_left) pthread_cond_signal(&fill_done);
+    return true;
+}
+
+static void *fill_worker(void *arg) {
+    (void)arg;
+    pthread_mutex_lock(&fill_lock);
+    for (;;)
+        while (!fill_run_one()) pthread_cond_wait(&fill_wake, &fill_lock);
+    return NULL;
+}
+
+// Threads for the fills: an eighth of the CPUs, 1 or 2 (the render thread helps at the flush; on a 16-thread laptop, a
+// stage's first frame with 1, 2, 4 and 8 workers: the same, 10-15 ms of texture work on the render thread against 60,
+// so no more than the memory can feed); LARECOMP_TEX_THREADS=<n> (0: all on the render thread, as before).
+static int fill_threads(void) {
+    if (fill_workers < 0) {
+        const char *e = getenv("LARECOMP_TEX_THREADS");
+        int n = plat_cpu_count();
+        if (n <= 0) n = SDL_GetNumLogicalCPUCores();
+        fill_workers = e ? atoi(e) : n / 8 < 1 ? 1 : n / 8 > 2 ? 2 : n / 8;
+        for (int i = 0; i < fill_workers; i++) {
+            pthread_t t;
+            if (!pthread_create(&t, NULL, fill_worker, NULL)) pthread_detach(t);
+        }
+    }
+    return fill_workers;
+}
+
+// One texture's fills, queued together at the end of its upload when its hash is among them (a first upload of a big
+// texture): the hash goes first and the same worker fills after it, so the hash is never newer than the data uploaded -
+// a write by the game in between then shows as a changed hash at the next check, and the texture goes up again.
+typedef struct { Fill *v; int n, cap; bool on; } FillGroup;
+static void group_add(FillGroup *g, const Fill *f) {
+    if (g->n == g->cap) g->v = realloc(g->v, (g->cap = g->cap ? g->cap * 2 : 16) * sizeof *g->v);
+    g->v[g->n++] = *f;
+}
+static void fill_queue(Fill *v, int n) {
+    pthread_mutex_lock(&fill_lock);
+    if (fill_n + n > fill_cap) fill_q = realloc(fill_q, (fill_cap = (fill_n + n) * 2 > 256 ? (fill_n + n) * 2 : 256) * sizeof *fill_q);
+    v[0].chain = n - 1;
+    memcpy(&fill_q[fill_n], v, (size_t)n * sizeof *v);
+    fill_n += n;
+    fill_left += n;
+    pthread_cond_signal(&fill_wake);
+    pthread_mutex_unlock(&fill_lock);
+}
+static void fill_emit(FillGroup *g, Fill *f, uint64_t bytes) {
+    if (g->on) group_add(g, f);
+    else if (bytes < FILL_MIN_BYTES || !fill_threads()) fill_level(f);
+    else fill_queue(f, 1);
+}
+static void fill_group_end(FillGroup *g) {
+    if (g->n) fill_queue(g->v, g->n);
+    free(g->v);
+}
+
+// LARECOMP_TEX_VERIFY=1 (test): what the workers wrote, made again here and compared byte for byte (a game thread
+// writing the texture meanwhile can show as a difference too), one log line a flush.
+static void fill_verify(void) {
+    static int on = -1;
+    if (on < 0) on = getenv("LARECOMP_TEX_VERIFY") != NULL;
+    if (!on) return;
+    int fills = 0, differ = 0, hashes = 0, hash_differ = 0;
+    for (int i = 0; i < fill_n; i++) {
+        const Fill *f = &fill_q[i];
+        if (f->kind == FILL_HASH) {
+            hashes++;
+            hash_differ += f->hash_to->data_hash != tex_hash_full(f->src, f->hash_bytes);
+            continue;
+        }
+        Fill again = *f;
+        again.dst = malloc(f->out_bytes);
+        fill_level(&again);
+        fills++;
+        differ += memcmp(again.dst, f->dst, f->out_bytes) != 0;
+        free(again.dst);
+    }
+    LOG("[tex] fill verify: %d fills, %d differ; %d hashes, %d differ\n", fills, differ, hashes, hash_differ);
+}
+
+// Every queued fill finished (the render thread takes its share too). Before the submission that reads what they wrote.
+void tex_fill_flush(void) {
+    if (!fill_n) return;
+    uint64_t t0 = SDL_GetTicksNS();
+    pthread_mutex_lock(&fill_lock);
+    while (fill_run_one()) {}
+    while (fill_left) pthread_cond_wait(&fill_done, &fill_lock);
+    fill_verify();
+    fill_n = fill_next = 0;
+    pthread_mutex_unlock(&fill_lock);
+    extern void slow_note_tex_ns(uint64_t hash_ns, uint64_t convert_ns);  // (slowframe.h)
+    slow_note_tex_ns(0, SDL_GetTicksNS() - t0);
+}
+
 uint64_t prof_tex_checks, prof_tex_samples, prof_tex_full, prof_tex_full_bytes, prof_tex_dyn, prof_tex_watch_skips;
 static void upload_texture(NvnTexture *t, TexBackend *b) {
     if (!t->addr || t->target == 10) return;
@@ -714,21 +881,35 @@ static void upload_texture(NvnTexture *t, TexBackend *b) {
         if (sh == b->sample_hash) return;
     }
     prof_tex_full++; prof_tex_full_bytes += total; if (b->dynamic) prof_tex_dyn++;
-    extern void slow_note_full_hash(void), slow_note_upload(uint64_t bytes);  // (slowframe.h)
+    extern void slow_note_full_hash(void), slow_note_upload(uint64_t bytes), slow_note_tex_ns(uint64_t hash_ns, uint64_t convert_ns);  // (slowframe.h)
     slow_note_full_hash();
-    uint64_t h = fast ? tex_hash_full(mem, total) : hash_full(mem, total);
+    uint64_t t_hash = SDL_GetTicksNS();
     b->full_frame = frame;
-    // (the sample is only compared while the texture isn't dynamic, and a dynamic one stays so: none for those)
-    if (!fast) b->sample_hash = fnv_sample(mem, total);
-    else if (!b->dynamic && !(b->uploaded && h != b->data_hash)) b->sample_hash = tex_hash_sample(mem, total);
-    if (b->uploaded && h == b->data_hash && !restyle) return;
-    if (b->uploaded && h != b->data_hash) b->dynamic = true;
-    // new contents (the game reused the memory for another image, or the data arrived after the first check): which
-    // known texture it is, if any, is decided again before this upload patches it
-    b->data_hash = h;
+    Fill hf = {.kind = FILL_HASH, .src = mem, .hash_to = b, .hash_bytes = total, .sample = !b->dynamic};
+    bool defer_hash = fast && !b->uploaded && total >= FILL_MIN_BYTES && fill_threads();
+    if (!defer_hash) {
+        uint64_t h = fast ? tex_hash_full(mem, total) : hash_full(mem, total);
+        // (the sample is only compared while the texture isn't dynamic, and a dynamic one stays so: none for those)
+        if (!fast) b->sample_hash = fnv_sample(mem, total);
+        else if (!b->dynamic && !(b->uploaded && h != b->data_hash)) b->sample_hash = tex_hash_sample(mem, total);
+        slow_note_tex_ns(SDL_GetTicksNS() - t_hash, 0);
+        if (b->uploaded && h == b->data_hash && !restyle) return;
+        if (b->uploaded && h != b->data_hash) b->dynamic = true;
+        // new contents (the game reused the memory for another image, or the data arrived after the first check): which
+        // known texture it is, if any, is decided again before this upload patches it
+        b->data_hash = h;
+    }
+    // (a first upload of a big texture: nothing compares the hashes before the next check, after the flush, so its hashes
+    // go to a worker with its fills: a stage's textures were hashed one after the other on the render thread)
     b->uploaded = true;
-    if (b->format != mf.vf && !b->astc_bw && !b->cpu_bc) return;  // unsupported format: nothing sensible to copy
+    if (b->format != mf.vf && !b->astc_bw && !b->cpu_bc) {  // unsupported format: nothing sensible to copy
+        if (defer_hash) fill_queue(&hf, 1);
+        return;
+    }
+    FillGroup grp = {.on = defer_hash};
+    if (defer_hash) group_add(&grp, &hf);
     slow_note_upload(total);
+    uint64_t t_conv = SDL_GetTicksNS();
     VkCommandBuffer cb = vk_upload_cmd();
     uint32_t layers = t->layout.layers ? t->layout.layers : 1;
     if (layers > b->layers && b->depth == 1) layers = b->layers;
@@ -738,16 +919,15 @@ static void upload_texture(NvnTexture *t, TexBackend *b) {
     for (uint32_t layer = 0; layer < layers; layer++) {
         for (uint32_t lv = 0; lv < levels; lv++) {
             LevelLayout l = tegra_level(&t->layout, lv);
-            if (b->astc_bw || b->cpu_bc) {  // blocks -> linear block rows -> RGBA8 (BC6H: RGBA16F) texels
-                const uint8_t *src = (const uint8_t *)(uintptr_t)t->addr + layer * layer_size + l.offset;
-                uint32_t bpb = fi->bpb, brow = l.wb * bpb;
-                uint8_t *blocks = malloc((uint64_t)brow * l.hb);
-                if (linear) for (uint32_t y = 0; y < l.hb; y++) memcpy(blocks + (uint64_t)y * brow, src + (uint64_t)y * t->stride, brow);
-                else tegra_deswizzle(src, blocks, l.wb, l.hb, 1, bpb, l.block_height_log2, l.block_depth_log2);
-                VkSpan s = vk_transient((uint64_t)l.w * l.h * (b->cpu_bc ? bc_texel_bytes(b->cpu_bc) : 4), 16);
-                if (b->cpu_bc) bc_decode(b->cpu_bc, blocks, l.w, l.h, s.ptr);
-                else astc_decode_ldr(blocks, l.w, l.h, b->astc_bw, b->astc_bh, b->astc_srgb, s.ptr);
-                free(blocks);
+            Fill f = {.src = (const uint8_t *)(uintptr_t)t->addr + layer * layer_size + l.offset, .stride = t->stride,
+                      .wb = l.wb, .hb = l.hb, .d = l.d, .bpb = fi->bpb, .bh_log2 = l.block_height_log2,
+                      .bd_log2 = l.block_depth_log2, .w = l.w, .h = l.h, .linear = linear};
+            if (b->astc_bw || b->cpu_bc) {
+                f.kind = FILL_DECODE, f.d = 1, f.bc = b->cpu_bc, f.astc_bw = b->astc_bw, f.astc_bh = b->astc_bh, f.astc_srgb = b->astc_srgb;
+                uint64_t out = (uint64_t)l.w * l.h * (b->cpu_bc ? bc_texel_bytes(b->cpu_bc) : 4);
+                VkSpan s = vk_transient(out, 16);
+                f.dst = s.ptr, f.out_bytes = out;
+                fill_emit(&grp, &f, out);
                 VkBufferImageCopy rg = {.bufferOffset = s.off, .bufferRowLength = l.w, .bufferImageHeight = l.h,
                                         .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, lv, layer, 1},
                                         .imageExtent = {l.w < level_w(b, lv) ? l.w : level_w(b, lv), l.h < level_h(b, lv) ? l.h : level_h(b, lv), 1}};
@@ -755,24 +935,11 @@ static void upload_texture(NvnTexture *t, TexBackend *b) {
                 rec_CmdCopyBufferToImage(cb, s.buf, b->image, VK_IMAGE_LAYOUT_GENERAL, 1, &rg);
                 continue;
             }
-            uint32_t row = l.wb * fi->bpb;
-            uint64_t sz = (uint64_t)row * l.hb * l.d;
             bool expand = mf.expand_rgb && fi->bpb == 3;
-            uint32_t out_row = expand ? l.wb * 4 : row;
-            VkSpan s = vk_transient((uint64_t)out_row * l.hb * l.d, 16);
-            uint8_t *lin = expand ? malloc(sz) : s.ptr;
-            const uint8_t *src = (const uint8_t *)(uintptr_t)t->addr + layer * layer_size + l.offset;
-            if (linear) {
-                for (uint32_t y = 0; y < l.hb; y++) memcpy(lin + (uint64_t)y * row, src + (uint64_t)y * t->stride, row);
-            } else {
-                tegra_deswizzle(src, lin, l.wb, l.hb, l.d, fi->bpb, l.block_height_log2, l.block_depth_log2);
-            }
-            if (expand) {  // RGB8 -> RGBA8
-                uint8_t *o = s.ptr;
-                uint64_t n = (uint64_t)l.wb * l.hb * l.d;
-                for (uint64_t i = 0; i < n; i++) { o[i * 4] = lin[i * 3]; o[i * 4 + 1] = lin[i * 3 + 1]; o[i * 4 + 2] = lin[i * 3 + 2]; o[i * 4 + 3] = 255; }
-                free(lin);
-            }
+            uint64_t out = (uint64_t)(expand ? l.wb * 4 : l.wb * fi->bpb) * l.hb * l.d;
+            VkSpan s = vk_transient(out, 16);
+            f.kind = expand ? FILL_EXPAND_RGB : FILL_COPY, f.dst = s.ptr, f.out_bytes = out;
+            fill_emit(&grp, &f, out);
             uint32_t w = l.w, hh = l.h, d = l.d;
             // the copy stays inside the image's level: a texture allocated at the internal resolution (16:9, render
             // target sized) can still be filled from the CPU - the save slots' screenshots on the title screen. Its
@@ -787,9 +954,11 @@ static void upload_texture(NvnTexture *t, TexBackend *b) {
                                                     b->depth > 1 ? d : 1}};
             if (b->aspect == (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)) continue;  // packed D/S: no CPU layout
             vk_dl_note_upload((void *)b->image, rg.imageExtent.width, rg.imageExtent.height, rg.imageSubresource.mipLevel);
-                rec_CmdCopyBufferToImage(cb, s.buf, b->image, VK_IMAGE_LAYOUT_GENERAL, 1, &rg);
+            rec_CmdCopyBufferToImage(cb, s.buf, b->image, VK_IMAGE_LAYOUT_GENERAL, 1, &rg);
         }
     }
+    fill_group_end(&grp);
+    slow_note_tex_ns(0, SDL_GetTicksNS() - t_conv);
 }
 
 TexBackend *vk_tex(NvnTexture *t, bool for_render) {
@@ -910,7 +1079,11 @@ VkImageView vk_image_view(TexBackend *b, VkImageViewType type, VkFormat fmt, uin
     VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = b->image, .viewType = type,
                                 .format = fmt, .components = sw, .subresourceRange = {aspect, lv0, nlv, ly0, nly}};
     VkImageView v;
-    if (vkCreateImageView(g_vk.dev, &vi, NULL, &v) != VK_SUCCESS) {
+    extern void slow_note_view_ns(uint64_t ns);  // (slowframe.h)
+    uint64_t t_view = SDL_GetTicksNS();
+    VkResult vr = vkCreateImageView(g_vk.dev, &vi, NULL, &v);
+    slow_note_view_ns(SDL_GetTicksNS() - t_view);
+    if (vr != VK_SUCCESS) {
         static int nfail;
         if (nfail++ < 20) LOG("[vk] view failed: type %d fmt %d (image fmt %d) levels %u+%u layers %u+%u\n", type, fmt, b->format, lv0, nlv, ly0, nly);
         return VK_NULL_HANDLE;
@@ -1057,33 +1230,33 @@ VkImageView vk_storage_view(NvnTexture *t, const NvnTextureView *v, bool has_vie
     return vk_image_view(b, b->base_type, b->format, lv0, 1, 0, b->layers, IDENTITY, b->aspect);
 }
 
-// 1x1 black textures for unbound slots, per type
+// 1x1 black textures for unbound slots, per type. Only the image is kept: its view comes from the view table on each
+// use (a cached handle could be evicted from that table and destroyed under us, as vk_dummy_color_view says)
 VkImageView vk_dummy_view(int textype) {
     static TexBackend dummies[10];
-    static VkImageView views[10];
     if (textype < 0 || textype >= 10) textype = TEXTYPE_2D;
-    if (views[textype]) return views[textype];
     TexBackend *b = &dummies[textype];
     VkImageViewType vt = view_type_for(textype);
     bool cube = vt == VK_IMAGE_VIEW_TYPE_CUBE || vt == VK_IMAGE_VIEW_TYPE_CUBE_ARRAY;
-    VkImageCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .flags = cube ? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT : 0,
-                            .imageType = vt == VK_IMAGE_VIEW_TYPE_3D ? VK_IMAGE_TYPE_3D
-                                       : vt == VK_IMAGE_VIEW_TYPE_1D || vt == VK_IMAGE_VIEW_TYPE_1D_ARRAY ? VK_IMAGE_TYPE_1D : VK_IMAGE_TYPE_2D,
-                            .format = VK_FORMAT_R8G8B8A8_UNORM, .extent = {1, 1, 1}, .mipLevels = 1, .arrayLayers = cube ? 6 : 1,
-                            .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
-                            .usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT};
-    VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
-    VK_CHECK(vmaCreateImage(g_vk.vma, &ci, &ai, &b->image, &b->mem, NULL));
-    VkCommandBuffer cb = vk_upload_cmd();
-    vk_image_init_layout(cb, b->image, VK_IMAGE_ASPECT_COLOR_BIT);
-    VkClearColorValue zero = {{0, 0, 0, 0}};
-    VkImageSubresourceRange all = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, cube ? 6 : 1};
-    rec_CmdClearColorImage(cb, b->image, VK_IMAGE_LAYOUT_GENERAL, &zero, 1, &all);
-    b->format = VK_FORMAT_R8G8B8A8_UNORM;
-    b->levels = 1;
-    b->layers = cube ? 6 : 1;
-    views[textype] = vk_image_view(b, vt, b->format, 0, 1, 0, cube ? 6 : 1, IDENTITY, VK_IMAGE_ASPECT_COLOR_BIT);
-    return views[textype];
+    if (!b->image) {
+        VkImageCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .flags = cube ? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT : 0,
+                                .imageType = vt == VK_IMAGE_VIEW_TYPE_3D ? VK_IMAGE_TYPE_3D
+                                           : vt == VK_IMAGE_VIEW_TYPE_1D || vt == VK_IMAGE_VIEW_TYPE_1D_ARRAY ? VK_IMAGE_TYPE_1D : VK_IMAGE_TYPE_2D,
+                                .format = VK_FORMAT_R8G8B8A8_UNORM, .extent = {1, 1, 1}, .mipLevels = 1, .arrayLayers = cube ? 6 : 1,
+                                .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
+                                .usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT};
+        VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
+        VK_CHECK(vmaCreateImage(g_vk.vma, &ci, &ai, &b->image, &b->mem, NULL));
+        VkCommandBuffer cb = vk_upload_cmd();
+        vk_image_init_layout(cb, b->image, VK_IMAGE_ASPECT_COLOR_BIT);
+        VkClearColorValue zero = {{0, 0, 0, 0}};
+        VkImageSubresourceRange all = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, cube ? 6 : 1};
+        rec_CmdClearColorImage(cb, b->image, VK_IMAGE_LAYOUT_GENERAL, &zero, 1, &all);
+        b->format = VK_FORMAT_R8G8B8A8_UNORM;
+        b->levels = 1;
+        b->layers = cube ? 6 : 1;
+    }
+    return vk_image_view(b, vt, b->format, 0, 1, 0, b->layers, IDENTITY, VK_IMAGE_ASPECT_COLOR_BIT);
 }
 
 // Depth compare (sampler*Shadow) needs a view whose format has SAMPLED_IMAGE_DEPTH_COMPARISON: the RGBA8 dummy above
@@ -1112,47 +1285,50 @@ bool vk_tex_depth_compare(NvnTexture *t) {
 
 VkImageView vk_dummy_depth_view(int textype) {
     static TexBackend dummies[10];
-    static VkImageView views[10];
+    static bool failed[10];  // (no depth image: the colour dummy instead)
     if (textype < 0 || textype >= 10) textype = TEXTYPE_2D;
-    if (views[textype]) return views[textype];
     VkImageViewType vt = view_type_for(textype);
-    if (vt != VK_IMAGE_VIEW_TYPE_2D && vt != VK_IMAGE_VIEW_TYPE_2D_ARRAY && vt != VK_IMAGE_VIEW_TYPE_CUBE &&
-        vt != VK_IMAGE_VIEW_TYPE_CUBE_ARRAY)
+    if (failed[textype] || (vt != VK_IMAGE_VIEW_TYPE_2D && vt != VK_IMAGE_VIEW_TYPE_2D_ARRAY && vt != VK_IMAGE_VIEW_TYPE_CUBE &&
+                            vt != VK_IMAGE_VIEW_TYPE_CUBE_ARRAY))
         return vk_dummy_view(textype);
-    static VkFormat df;
-    if (!df) {
-        df = vk_format_depth_compare(VK_FORMAT_D32_SFLOAT) ? VK_FORMAT_D32_SFLOAT : VK_FORMAT_D16_UNORM;
-        LOG("[vk] shadow slot dummy: 1x1 %s cleared to 1.0\n", df == VK_FORMAT_D32_SFLOAT ? "D32_SFLOAT" : "D16_UNORM");
-    }
-    bool cube = vt == VK_IMAGE_VIEW_TYPE_CUBE || vt == VK_IMAGE_VIEW_TYPE_CUBE_ARRAY;
-    uint32_t layers = cube ? 6 : 1;
     TexBackend *b = &dummies[textype];
-    VkImageCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .flags = cube ? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT : 0,
-                            .imageType = VK_IMAGE_TYPE_2D, .format = df, .extent = {1, 1, 1}, .mipLevels = 1,
-                            .arrayLayers = layers, .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
-                            .usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT};
-    VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
-    if (vmaCreateImage(g_vk.vma, &ci, &ai, &b->image, &b->mem, NULL) != VK_SUCCESS) {
-        LOG("[vk] shadow slot dummy: depth image creation failed, the colour dummy instead\n");
-        return views[textype] = vk_dummy_view(textype);
+    if (!b->image) {
+        static VkFormat df;
+        if (!df) {
+            df = vk_format_depth_compare(VK_FORMAT_D32_SFLOAT) ? VK_FORMAT_D32_SFLOAT : VK_FORMAT_D16_UNORM;
+            LOG("[vk] shadow slot dummy: 1x1 %s cleared to 1.0\n", df == VK_FORMAT_D32_SFLOAT ? "D32_SFLOAT" : "D16_UNORM");
+        }
+        bool cube = vt == VK_IMAGE_VIEW_TYPE_CUBE || vt == VK_IMAGE_VIEW_TYPE_CUBE_ARRAY;
+        uint32_t layers = cube ? 6 : 1;
+        VkImageCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .flags = cube ? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT : 0,
+                                .imageType = VK_IMAGE_TYPE_2D, .format = df, .extent = {1, 1, 1}, .mipLevels = 1,
+                                .arrayLayers = layers, .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
+                                .usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT};
+        VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
+        if (vmaCreateImage(g_vk.vma, &ci, &ai, &b->image, &b->mem, NULL) != VK_SUCCESS) {
+            b->image = VK_NULL_HANDLE;
+            failed[textype] = true;
+            LOG("[vk] shadow slot dummy: depth image creation failed, the colour dummy instead\n");
+            return vk_dummy_view(textype);
+        }
+        VkCommandBuffer cb = vk_upload_cmd();
+        vk_image_init_layout(cb, b->image, VK_IMAGE_ASPECT_DEPTH_BIT);
+        VkClearDepthStencilValue one = {1.0f, 0};
+        VkImageSubresourceRange all = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, layers};
+        rec_CmdClearDepthStencilImage(cb, b->image, VK_IMAGE_LAYOUT_GENERAL, &one, 1, &all);
+        VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2, .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                               .srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT, .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                               .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT};
+        VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &mb};
+        rec_CmdPipelineBarrier2(cb, &di);
+        b->format = df;
+        b->levels = 1;
+        b->layers = layers;
+        b->aspect = VK_IMAGE_ASPECT_DEPTH_BIT;
     }
-    VkCommandBuffer cb = vk_upload_cmd();
-    vk_image_init_layout(cb, b->image, VK_IMAGE_ASPECT_DEPTH_BIT);
-    VkClearDepthStencilValue one = {1.0f, 0};
-    VkImageSubresourceRange all = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, layers};
-    rec_CmdClearDepthStencilImage(cb, b->image, VK_IMAGE_LAYOUT_GENERAL, &one, 1, &all);
-    VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2, .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-                           .srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT, .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-                           .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT};
-    VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &mb};
-    rec_CmdPipelineBarrier2(cb, &di);
-    b->format = df;
-    b->levels = 1;
-    b->layers = layers;
-    b->aspect = VK_IMAGE_ASPECT_DEPTH_BIT;
-    views[textype] = vk_image_view(b, vt, df, 0, 1, 0, layers, IDENTITY, VK_IMAGE_ASPECT_DEPTH_BIT);
-    if (!views[textype]) views[textype] = vk_dummy_view(textype);
-    return views[textype];
+    VkImageView v = vk_image_view(b, vt, b->format, 0, 1, 0, b->layers, IDENTITY, VK_IMAGE_ASPECT_DEPTH_BIT);
+    if (!v) failed[textype] = true;
+    return v ? v : vk_dummy_view(textype);
 }
 
 // Throwaway color attachment for passes that have none (exec.c begin_pass, Intel only): R8, at least w x h (the pass's

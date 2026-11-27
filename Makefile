@@ -157,20 +157,22 @@ GAMELIB  := $(B)/lasgame.dylib
 GAMELIB_LDFLAGS := -dynamiclib -undefined dynamic_lookup -install_name @rpath/LASGame.framework/LASGame
 GAMELIB_SHARED :=  # (never built on the device)
 else ifeq ($(PLATFORM),linux)
-EXE      := $(B)/lasrecomp
+EXE      := $(B)/$(EXE_NAME)
 DEPINC   := $(if $(DEPS),-I$(DEPS)/include)
 ifeq ($(ARCH),x86_64)
 GENARCH  ?= -march=x86-64-v3  # as on Windows: AVX2 + FMA for the lifted FP/SIMD code (checked at startup)
 endif
 GENFLAGS += $(GENARCH) -fPIC
-OSFLAGS  := -Wno-format  # (%llx for uint64_t, which is unsigned long here: the same size)
+# -DLARECOMP_ZSTD: shader_prep.c reads the game's .cmp shader files with zstd (without it the shader preparation finds 106 of
+# the game's 16,963 shaders, issue #8)
+OSFLAGS  := -Wno-format -DLARECOMP_ZSTD  # (%llx for uint64_t, which is unsigned long here: the same size)
 # shaderc as the system's pkg-config file names it (Arch / Fedora / AOSC ship only libshaderc_shared, issue #22);
 # without one -lshaderc (Debian / Ubuntu's libshaderc.so). SHADERC=... overrides it.
 SHADERC  ?= $(shell pkg-config --libs shaderc 2>/dev/null || echo -lshaderc)
 # -rdynamic: crash backtraces name host functions (runtime/platform/linux.c). DEPS: an rpath to its lib/ too, so the
 # game finds those libraries when run (the AppImage's own is set by tools/linux/package.sh)
 LDFLAGS  := -fuse-ld=lld -rdynamic $(if $(DEPS),-L$(DEPS)/lib -Wl$(comma)-rpath$(comma)$(abspath $(DEPS))/lib) \
-            -lSDL3 -lavformat -lavcodec -lavutil -lswscale -lvulkan $(SHADERC) -lpthread -ldl -lm
+            -lSDL3 -lavformat -lavcodec -lavutil -lswscale -lvulkan $(SHADERC) -l:libzstd.a -lpthread -ldl -lm
 BACKEND_SRC := $(wildcard runtime/nvn/vulkan/*.c) $(wildcard runtime/nvn/vulkan/*.cpp)
 BACKEND_OBJ := $(patsubst runtime/%.cpp,$(B)/rt/%.o,$(patsubst runtime/%.c,$(B)/rt/%.o,$(BACKEND_SRC)))
 IMGUI_OBJ += $(B)/imgui/imgui_impl_vulkan.o
@@ -286,6 +288,9 @@ $(B)/rt/nvn/smaa_data.o: RTFLAGS += -I$(B)/inc -Ithird_party/smaa/Textures
 $(B)/inc/shader_variants.inc: runtime/nvn/shader_variants.txt
 	@mkdir -p $(dir $@)
 	(LC_ALL=C tr -d '\r' < $< | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e 's/^/"/' -e 's/$$/\\n"/'; echo '""') > $@
+	@# (a release once shipped with this file empty, the list unused: every record must make it in, or no build)
+	@want=$$(grep -c '^[GC] ' $<); got=$$(grep -c '^"[GC] ' $@); \
+	if [ "$$want" != "$$got" ]; then rm -f $@; echo "shader list: $$got of $$want records in $@" >&2; exit 1; fi
 $(B)/rt/nvn/shader_prep.o: $(B)/inc/shader_variants.inc
 $(B)/rt/nvn/shader_prep.o: RTFLAGS += -I$(B)/inc
 # the shader translator's id: part of the shader caches' tag (shader_cache_tag), so a changed translator rebuilds them

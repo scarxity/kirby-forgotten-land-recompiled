@@ -33,7 +33,7 @@ with tempfile.TemporaryDirectory() as directory:
     for newline in ['\n', '\r\n']:
         for setting, locale, code in cases:
             ini = directory / 'test.ini'
-            lines = [f'language = {setting}', 'aspect = original', 'upscaler = bilinear',
+            lines = [f'language = {setting}', 'aspect = unlocked', 'aspect_asked = 0', 'upscaler = bilinear',
                      'prompts = xbox', 'volume = 1.25', 'volume =', 'language =']
             ini.write_bytes((newline.join(lines) + newline).encode())
             env = dict(os.environ, LARECOMP_SETTINGS=str(ini), LC_ALL='', LC_MESSAGES='', LANG='C')
@@ -42,6 +42,7 @@ with tempfile.TemporaryDirectory() as directory:
             saved = ini.read_text()
             expected = 'auto' if setting in ['auto', 'unknown'] else setting if setting == 'pt-BR' else code  # (the menus' only)
             assert f'language = {expected}\n' in saved
+            assert 'aspect' not in saved  # (an old file's aspect lines are read past, not kept)
             count += 1
     # the upscaler's default follows the GPU until the player picks one (settings_resolve_defaults)
     for lines, mode in [(['upscaler = auto'], 'upscaler-auto'), (['volume = 1'], 'upscaler-auto'),

@@ -28,7 +28,8 @@ const void *interp_texentry(int stage, int i, const void *entry, uint32_t size);
 // a dispatch's output ranges, which the GPU rewrites in order and need no check.
 void interp_storage(uint64_t addr, uint64_t size);
 void interp_dispatch_output(uint64_t addr, uint64_t size);
-void interp_texture_destroyed(void);  // (render thread, in queue order) a texture went away during the frame
+void interp_texture_used(const void *tex);       // (render thread) the frame's lists use this texture (NvnTexture *)
+void interp_texture_destroyed(const void *tex);  // (render thread, in queue order) a texture went away during the frame (NULL: one the frame may have used)
 
 // Objects freed at once by the game's threads (programs, memory pools, samplers): a replay must not run while one goes,
 // nor use a frame that one went from after its lists were run.

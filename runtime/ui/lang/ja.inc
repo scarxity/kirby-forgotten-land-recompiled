@@ -220,7 +220,7 @@
 {"Switch", "Switch"},
 {"Xbox / PlayStation", "Xbox / PlayStation"},
 {"Button layout", "ボタン配置"},
-{"Switch keeps the Switch's button positions, so the right button confirms. Xbox / PlayStation swaps the bottom and right buttons, so the bottom button confirms, as on those controllers. Applies to the game and LAS Recomp's menus. Nintendo controllers aren't affected.", "「Switch」はSwitchのボタン位置のままで、右のボタンで決定します。「Xbox / PlayStation」は下と右のボタンを入れ替え、これらのコントローラーと同じく下のボタンで決定します。ゲームとLAS Recompのメニューに適用されます。Nintendoのコントローラーには影響しません。"},
+{"Switch keeps the Switch's button positions, so the right button confirms. Xbox / PlayStation swaps the bottom and right buttons, so the bottom button confirms, as on those controllers. Applies to the game and the recomp's menus. Nintendo controllers aren't affected.", "「Switch」はSwitchのボタン位置のままで、右のボタンで決定します。「Xbox / PlayStation」は下と右のボタンを入れ替え、これらのコントローラーと同じく下のボタンで決定します。ゲームとRecompのメニューに適用されます。Nintendoのコントローラーには影響しません。"},
 {"Display", "画面"},
 {"Appearance", "見た目"},
 {"Layout", "配置"},
@@ -440,10 +440,6 @@
 {"Not recognized: %d.", "認識できなかったもの: %d"},
 {"They load the next time you start the game.", "次にゲームを起動したときに読み込まれます。"},
 {"Imported fonts removed. You're back on the substitute fonts.", "取り込んだフォントを削除しました。代替フォントに戻りました。"},
-{"How would you like to play?", "どちらで遊びますか？"},
-{"You can change this any time in Settings.", "これは設定でいつでも変更できます。"},
-{"Original 16:9", "オリジナルの16:9"},
-{"Unlocked, fill the screen", "制限なし、画面いっぱい"},
 {"Home button", "HOMEボタン"},
 {"Xbox button", "Xboxボタン"},
 {"PlayStation button", "PSボタン"},
@@ -563,10 +559,6 @@
 // runtime/ui/menu.mm
 {"Restart required", "再起動が必要です"},
 {"The Metal HUD shows after you restart the game.", "Metal HUDはゲームを再起動すると表示されます。"},
-{"Unlocked", "制限なし"},
-{"Configure the shape of the picture. Unlocked fills the window, Original keeps 16:9.", "画面の形を設定します。「制限なし」はウィンドウ全体に広がり、「オリジナル」は16:9のままです。"},
-{"Aspect ratio", "アスペクト比"},
-{"Unlocked fills the window and shows more of the island on wide screens, up to ultrawide. Original keeps the game's 16:9 view with bars.", "「制限なし」はウィンドウいっぱいに表示し、ワイド画面では島をより広く見渡せます（ウルトラワイドまで対応）。「オリジナル」はゲーム本来の16:9のまま、黒帯が入ります。"},
 {"Fullscreen", "フルスクリーン"},
 {"Fills the screen. You can also press F11, Alt+Enter or Cmd+Ctrl+F.", "画面いっぱいに表示します。F11、Alt+Enter、Cmd+Ctrl+Fでも切り替えられます。"},
 {"Top left", "左上"},
@@ -688,9 +680,6 @@
 {"Couldn't save", "セーブできませんでした"},
 {"The game may say it saved, but it didn't. Your previous save is unchanged.", "ゲーム内ではセーブしたと表示されることがありますが、セーブされていません。前のセーブデータはそのままです。"},
 {"Make sure this folder can be written to and the disk has free space:", "このフォルダーに書き込めること、ディスクに空き容量があることを確認してください:"},
-{"Reset to vanilla?", "通常の設定に戻しますか？"},
-{"This resets your settings to the vanilla game experience.\nYour controls stay as they are.", "設定を通常のゲームの状態に戻します。\n操作設定はそのままです。"},
-{"This also ends the current randomizer seed.\nIts save files are kept.", "現在のランダマイザーのシードも終了します。\nそのセーブデータは残ります。"},
 {"Enter your name", "名前を入力"},
 {"Enter  confirm      Esc  cancel      (%d / %d)", "Enter  決定      Esc  キャンセル      (%d / %d)"},
 {"Video", "映像"},
@@ -718,7 +707,6 @@
 {"+1 Heart", "ハート+1"},
 {"Secret Seashells", "ヒミツの貝がら"},
 // runtime/ui/plastic.mm
-{"Reset to vanilla", "通常の設定に戻す"},
 // runtime/ui/race_overlay.mm
 {"SEED HASH", "シードハッシュ"},
 // runtime/ui/rando_tab.mm

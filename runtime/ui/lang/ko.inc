@@ -220,7 +220,7 @@
 {"Switch", "Switch"},
 {"Xbox / PlayStation", "Xbox / PlayStation"},
 {"Button layout", "버튼 배치"},
-{"Switch keeps the Switch's button positions, so the right button confirms. Xbox / PlayStation swaps the bottom and right buttons, so the bottom button confirms, as on those controllers. Applies to the game and LAS Recomp's menus. Nintendo controllers aren't affected.", "Switch는 Switch의 버튼 위치를 유지해 오른쪽 버튼으로 결정합니다. Xbox / PlayStation은 아래쪽과 오른쪽 버튼을 바꿔, 해당 컨트롤러처럼 아래쪽 버튼으로 결정합니다. 게임과 LAS Recomp 메뉴에 적용됩니다. Nintendo 컨트롤러에는 영향이 없습니다."},
+{"Switch keeps the Switch's button positions, so the right button confirms. Xbox / PlayStation swaps the bottom and right buttons, so the bottom button confirms, as on those controllers. Applies to the game and the recomp's menus. Nintendo controllers aren't affected.", "Switch는 Switch의 버튼 위치를 유지해 오른쪽 버튼으로 결정합니다. Xbox / PlayStation은 아래쪽과 오른쪽 버튼을 바꿔, 해당 컨트롤러처럼 아래쪽 버튼으로 결정합니다. 게임과 Recomp 메뉴에 적용됩니다. Nintendo 컨트롤러에는 영향이 없습니다."},
 {"Display", "화면"},
 {"Appearance", "모양"},
 {"Layout", "배치"},
@@ -440,10 +440,6 @@
 {"Not recognized: %d.", "인식하지 못함: %d개."},
 {"They load the next time you start the game.", "다음에 게임을 시작할 때 적용됩니다."},
 {"Imported fonts removed. You're back on the substitute fonts.", "가져온 폰트를 삭제했습니다. 대체 폰트로 돌아갑니다."},
-{"How would you like to play?", "어떻게 플레이하시겠습니까?"},
-{"You can change this any time in Settings.", "설정에서 언제든 바꿀 수 있습니다."},
-{"Original 16:9", "원래대로 16:9"},
-{"Unlocked, fill the screen", "화면 가득 채우기"},
 {"Home button", "HOME 버튼"},
 {"Xbox button", "Xbox 버튼"},
 {"PlayStation button", "PS 버튼"},
@@ -563,10 +559,6 @@
 // runtime/ui/menu.mm
 {"Restart required", "다시 시작 필요"},
 {"The Metal HUD shows after you restart the game.", "Metal HUD는 게임을 다시 시작한 후에 표시됩니다."},
-{"Unlocked", "해제"},
-{"Configure the shape of the picture. Unlocked fills the window, Original keeps 16:9.", "화면의 모양을 설정합니다. 해제는 창을 가득 채우고, 원래대로는 16:9를 유지합니다."},
-{"Aspect ratio", "화면 비율"},
-{"Unlocked fills the window and shows more of the island on wide screens, up to ultrawide. Original keeps the game's 16:9 view with bars.", "해제는 창을 가득 채우고, 와이드 화면에서는 울트라와이드까지 섬을 더 넓게 보여 줍니다. 원래대로는 게임의 16:9 화면에 검은 띠를 둡니다."},
 {"Fullscreen", "전체 화면"},
 {"Fills the screen. You can also press F11, Alt+Enter or Cmd+Ctrl+F.", "화면을 가득 채웁니다. F11, Alt+Enter, Cmd+Ctrl+F로도 전환할 수 있습니다."},
 {"Top left", "왼쪽 위"},
@@ -688,9 +680,6 @@
 {"Couldn't save", "저장하지 못했습니다"},
 {"The game may say it saved, but it didn't. Your previous save is unchanged.", "게임에서는 저장됐다고 나올 수 있지만 저장되지 않았습니다. 이전 세이브 데이터는 그대로입니다."},
 {"Make sure this folder can be written to and the disk has free space:", "이 폴더에 쓸 수 있는지, 디스크에 여유 공간이 있는지 확인하세요:"},
-{"Reset to vanilla?", "오리지널로 초기화할까요?"},
-{"This resets your settings to the vanilla game experience.\nYour controls stay as they are.", "설정을 오리지널 게임 그대로 초기화합니다.\n조작 설정은 그대로 남습니다."},
-{"This also ends the current randomizer seed.\nIts save files are kept.", "현재 랜더마이저 시드도 종료됩니다.\n시드의 세이브 데이터는 남습니다."},
 {"Enter your name", "이름을 입력하세요"},
 {"Enter  confirm      Esc  cancel      (%d / %d)", "Enter  결정      Esc  취소      (%d / %d)"},
 {"Video", "비디오"},
@@ -718,7 +707,6 @@
 {"+1 Heart", "하트 +1"},
 {"Secret Seashells", "비밀의 소라껍데기"},
 // runtime/ui/plastic.mm
-{"Reset to vanilla", "오리지널로 초기화"},
 // runtime/ui/race_overlay.mm
 {"SEED HASH", "시드 해시"},
 // runtime/ui/rando_tab.mm

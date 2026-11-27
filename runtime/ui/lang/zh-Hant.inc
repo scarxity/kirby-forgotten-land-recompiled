@@ -220,7 +220,7 @@
 {"Switch", "Switch"},
 {"Xbox / PlayStation", "Xbox / PlayStation"},
 {"Button layout", "按鈕配置"},
-{"Switch keeps the Switch's button positions, so the right button confirms. Xbox / PlayStation swaps the bottom and right buttons, so the bottom button confirms, as on those controllers. Applies to the game and LAS Recomp's menus. Nintendo controllers aren't affected.", "「Switch」維持Switch的按鈕位置，用右方按鈕確定。「Xbox / PlayStation」交換下方和右方按鈕，像這些控制器一樣用下方按鈕確定。適用於遊戲和LAS Recomp的選單。不影響Nintendo控制器。"},
+{"Switch keeps the Switch's button positions, so the right button confirms. Xbox / PlayStation swaps the bottom and right buttons, so the bottom button confirms, as on those controllers. Applies to the game and the recomp's menus. Nintendo controllers aren't affected.", "「Switch」維持Switch的按鈕位置，用右方按鈕確定。「Xbox / PlayStation」交換下方和右方按鈕，像這些控制器一樣用下方按鈕確定。適用於遊戲和Recomp的選單。不影響Nintendo控制器。"},
 {"Display", "顯示"},
 {"Appearance", "外觀"},
 {"Layout", "配置"},
@@ -440,10 +440,6 @@
 {"Not recognized: %d.", "無法辨識：%d。"},
 {"They load the next time you start the game.", "下次啟動遊戲時載入。"},
 {"Imported fonts removed. You're back on the substitute fonts.", "已移除匯入的字型，恢復為替代字型。"},
-{"How would you like to play?", "你想怎麼玩？"},
-{"You can change this any time in Settings.", "隨時都能在「設定」中變更。"},
-{"Original 16:9", "原始16:9"},
-{"Unlocked, fill the screen", "解除鎖定，填滿畫面"},
 {"Home button", "HOME按鈕"},
 {"Xbox button", "Xbox按鈕"},
 {"PlayStation button", "PlayStation按鈕"},
@@ -563,10 +559,6 @@
 // runtime/ui/menu.mm
 {"Restart required", "需要重新啟動"},
 {"The Metal HUD shows after you restart the game.", "重新啟動遊戲後會顯示Metal HUD。"},
-{"Unlocked", "解除鎖定"},
-{"Configure the shape of the picture. Unlocked fills the window, Original keeps 16:9.", "設定畫面的形狀。解除鎖定會填滿視窗，原始保持 16:9。"},
-{"Aspect ratio", "畫面比例"},
-{"Unlocked fills the window and shows more of the island on wide screens, up to ultrawide. Original keeps the game's 16:9 view with bars.", "「解除鎖定」會填滿視窗，在寬螢幕上看到更多的島嶼，最寬可到超寬螢幕。「原始」保留遊戲的16:9畫面並顯示黑邊。"},
 {"Fullscreen", "全螢幕"},
 {"Fills the screen. You can also press F11, Alt+Enter or Cmd+Ctrl+F.", "填滿整個螢幕。也可以按F11、Alt+Enter或Cmd+Ctrl+F。"},
 {"Top left", "左上"},
@@ -688,9 +680,6 @@
 {"Couldn't save", "無法儲存"},
 {"The game may say it saved, but it didn't. Your previous save is unchanged.", "遊戲可能顯示已儲存，但實際上沒有儲存。你之前的存檔沒有變動。"},
 {"Make sure this folder can be written to and the disk has free space:", "請確認此資料夾可以寫入，且磁碟有可用空間："},
-{"Reset to vanilla?", "恢復為原版？"},
-{"This resets your settings to the vanilla game experience.\nYour controls stay as they are.", "這會將設定恢復為原版遊戲的體驗。\n操作設定會保持不變。"},
-{"This also ends the current randomizer seed.\nIts save files are kept.", "這也會結束目前的隨機化種子。\n種子的存檔會保留。"},
 {"Enter your name", "輸入名字"},
 {"Enter  confirm      Esc  cancel      (%d / %d)", "Enter  確定      Esc  取消      (%d / %d)"},
 {"Video", "影像"},
@@ -718,7 +707,6 @@
 {"+1 Heart", "+1顆心"},
 {"Secret Seashells", "秘密貝殼"},
 // runtime/ui/plastic.mm
-{"Reset to vanilla", "恢復為原版"},
 // runtime/ui/race_overlay.mm
 {"SEED HASH", "種子雜湊"},
 // runtime/ui/rando_tab.mm

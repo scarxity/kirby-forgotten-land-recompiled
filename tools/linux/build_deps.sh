@@ -1,7 +1,8 @@
 #!/bin/bash
 # tools/linux/build_deps.sh <x86_64|aarch64> (inside the build container, tools/linux/appimage.sh): what the AppImage
 # links against and ships, from pinned sources into build/linux/<arch>/deps - SDL3, an LGPL-only FFmpeg with just what
-# the game's movies need (the configuration of tools/build_deps_windows.sh), shaderc (GLSL -> SPIR-V; Ubuntu 22.04 has
+# the game's movies need (the configuration of tools/build_deps_windows.sh: swresample stays, the Opus decoder needs
+# it), shaderc (GLSL -> SPIR-V; Ubuntu 22.04 has
 # none), and the headers: Vulkan (newer than 22.04's), Vulkan Memory Allocator. aarch64 is cross-compiled against
 # the arm64 image's root filesystem in $SYSROOT. Each part is skipped when its output exists (delete deps/ to redo).
 set -euo pipefail
@@ -10,7 +11,7 @@ ARCH=$1
 S=$PWD/build/linux/src
 P=$PWD/build/linux/$ARCH/deps
 W=$PWD/build/linux/$ARCH/deps-build
-mkdir -p "$S" "$P/include" "$W"
+mkdir -p "$S" "$P/include" "$P/licenses" "$W"
 JOBS=$(nproc)
 
 fetch() {  # url sha256 file
@@ -76,6 +77,7 @@ if [ ! -f "$P/lib/libSDL3.so" ]; then
         -DCMAKE_INSTALL_PREFIX="$P" -DCMAKE_INSTALL_LIBDIR=lib -DSDL_SHARED=ON -DSDL_STATIC=OFF -DSDL_TESTS=OFF \
         -DSDL_EXAMPLES=OFF -DSDL_RPATH=OFF
     cmake --build "$W/sdl/build" -j"$JOBS" && cmake --install "$W/sdl/build"
+    cp "$W/sdl/LICENSE.txt" "$P/licenses/SDL3-zlib.txt"
 fi
 
 if [ ! -f "$P/lib/libavcodec.so" ]; then
@@ -83,13 +85,34 @@ if [ ! -f "$P/lib/libavcodec.so" ]; then
     (cd "$W/ffmpeg" && ./configure --prefix="$P" "${FF_CROSS[@]}" --arch="$ARCH" --target-os=linux \
         --enable-shared --disable-static --enable-pic \
         --disable-autodetect --disable-programs --disable-doc --disable-network --disable-avdevice --disable-avfilter \
-        --disable-swresample --disable-everything \
+        --disable-everything \
         --enable-protocol=file --enable-demuxer=matroska,mov \
         --enable-decoder=vp9,vp8,vorbis,opus,h264,aac --enable-parser=vp9,vp8,vorbis,opus,h264,aac \
         && make -j"$JOBS" && make install)
+    # (what the package's README and licenses/ say about it, kept with the build: a cached deps/ has no source tree)
+    cp "$W/ffmpeg/COPYING.LGPLv2.1" "$P/licenses/FFmpeg-LGPL-2.1.txt"
+    cp "$W/ffmpeg/COPYING.GPLv2" "$P/licenses/FFmpeg-COPYING.GPLv2"  # (the text of the GPL-2.0, which unicorn's library is under)
+    cp "$W/ffmpeg/RELEASE" "$P/ffmpeg-version.txt"
+    sed -n 's/^#define FFMPEG_CONFIGURATION "--prefix=[^ ]* \(.*\)"$/  .\/configure --prefix=<prefix> \1/p' "$W/ffmpeg/config.h" > "$P/ffmpeg-configure.txt"
 fi
 # (the library's own license and configure line: avcodec_license(), avcodec_configuration(); its .pc file has neither)
 grep -qa 'GPL version 3\|--enable-gpl' "$P/lib/libavcodec.so" && { echo "deps: FFmpeg is not LGPL"; exit 1; }
+# every decoder the game needs, really built: configure drops one whose dependency is missing without an error (Opus
+# without swresample: the game then stops where a level's music starts, runtime/services/hwopus.c; issue #8). Asked of
+# the built library, which a cross build cannot run.
+if [ "$ARCH" = "$(uname -m)" ]; then
+    cat > "$W/decoders.c" <<'EOF'
+#include <libavcodec/avcodec.h>
+#include <stdio.h>
+int main(void) {
+    int bad = 0;
+    for (const char *const *n = (const char *const[]){"opus", "vorbis", "vp9", "vp8", "h264", "aac", 0}; *n; n++)
+        if (!avcodec_find_decoder_by_name(*n)) fprintf(stderr, "deps: FFmpeg built without the %s decoder\n", *n), bad = 1;
+    return bad;
+}
+EOF
+    clang -I"$P/include" "$W/decoders.c" -L"$P/lib" -lavcodec -lavutil -Wl,-rpath,"$P/lib" -o "$W/decoders" && LD_LIBRARY_PATH="$P/lib" "$W/decoders"
+fi
 
 # shaderc as one shared library (glslang, SPIRV-Tools inside), the libshaderc_shared the Windows build links too;
 # its DEPS file pins the glslang / SPIRV-Tools / SPIRV-Headers commits (utils/git-sync-deps clones them)
@@ -104,5 +127,8 @@ if [ ! -f "$P/lib/libshaderc_shared.so" ]; then
     mkdir -p "$P/include/shaderc"
     cp "$W/shaderc/libshaderc/include/shaderc/"*.h "$P/include/shaderc/"
     cp -P "$W/shaderc/build/libshaderc/libshaderc_shared.so"* "$P/lib/"
+    cp "$W/shaderc/LICENSE" "$P/licenses/shaderc-Apache-2.0.txt"
+    cp "$W/shaderc/third_party/glslang/LICENSE.txt" "$P/licenses/glslang.txt"
+    cp "$W/shaderc/third_party/spirv-tools/LICENSE" "$P/licenses/SPIRV-Tools-Apache-2.0.txt"
 fi
 echo "deps ($ARCH): $(cd "$P/lib" && ls *.so | tr '\n' ' ')"

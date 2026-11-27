@@ -17,6 +17,7 @@
 #include "gamelib.h"
 #include "paths.h"
 #include "platform.h"
+#include "nvn/shader_prep.h"
 #include "romfs_build.h"
 #include "rt.h"
 
@@ -41,7 +42,7 @@ static bool is_file(const char *p) {
 bool setup_cli_parse(int argc, char **argv) {
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
-        if (!strcmp(a, "--status") || !strcmp(a, "--rebuild-code") || !strcmp(a, "--build-romfs")) {
+        if (!strcmp(a, "--status") || !strcmp(a, "--shaders-status") || !strcmp(a, "--rebuild-code") || !strcmp(a, "--build-romfs")) {
             snprintf(g_cmd, sizeof g_cmd, "%s", a + 2);
         } else if ((!strcmp(a, "--check") || !strcmp(a, "--setup") || !strcmp(a, "--prepare")) && i + 1 < argc) {
             snprintf(g_cmd, sizeof g_cmd, "%s", a + 2);
@@ -51,6 +52,9 @@ bool setup_cli_parse(int argc, char **argv) {
         }
     }
     if (!g_cmd[0]) return false;
+#ifndef _WIN32
+    setenv("LARECOMP_CLI_STDOUT", "1", 1);  // (macOS, Linux: no session log over stdout, platform/posix_log.h)
+#endif
 #ifdef _WIN32
     // (a GUI-subsystem process started with no stderr would get a session log that takes stdout too: plat_init)
     HANDLE err = GetStdHandle(STD_ERROR_HANDLE);
@@ -250,6 +254,13 @@ int setup_cli_run(void) {
     }
     if (!strcmp(g_cmd, "status")) {
         printf("%s\n", !files_set_up() ? "none" : gamelib_present(ROOT) ? "ready" : "build");
+        fflush(stdout);
+        return 0;
+    }
+    if (!strcmp(g_cmd, "shaders-status")) {  // (the same check --play makes: runtime/nvn/shader_prep.c shader_prep_needed)
+        char why[64];
+        if (shader_prep_needed(ROOT, why, sizeof why)) printf("prepare %s\n", why);
+        else printf("ready\n");
         fflush(stdout);
         return 0;
     }

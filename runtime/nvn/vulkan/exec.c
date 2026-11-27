@@ -591,9 +591,11 @@ static void cb_early_reset(Sub *s) {
 }
 
 // Submit the pending work (if any). wait/signal: binary semaphores for presentation (may be null).
+void tex_fill_flush(void);  // (textures.c: uploads' fills on worker threads)
 void vk_submit_extra(VkSemaphore wait, VkSemaphore signal, VkCommandBuffer extra) {
     (void)extra;
     vk_end_pass();
+    tex_fill_flush();  // (the upload copies read what they wrote)
     Sub *s = sub();
     if (!s->main_begun && !s->upload_begun && !wait && !signal) return;
     VkCommandBufferSubmitInfo cbs[2];
@@ -6150,7 +6152,9 @@ static bool iv_find(uint64_t addr, uint64_t size, VkBuffer *buf, VkDeviceSize *o
             iv_binds++;
             return true;
         }
-    iv_missed++;
+    // (counted only for data iv_note copies: a static mesh has no copy and is read in place, as it should be)
+    extern int nvn_pool_flags_at(uint64_t addr);
+    iv_missed += size <= 65536 || (size <= (1u << 20) && (nvn_pool_flags_at(addr) & 0x13) == 0x12);
     return false;
 }
 

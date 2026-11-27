@@ -12,6 +12,7 @@ live in `tools/ci/run.sh`, so a PC runs the same thing with `make ci-test`.
 | Job | Checks |
 |---|---|
 | `runtime` | The runtime builds (`build/ForgottenLandRecomp.exe`, MSYS2 UCRT64). LAS Recomp's game-free tests: build cache, process handling, delete guard, data move, movie extractor, kernel condition variable, rumble, active pad, Vulkan fence, validation, overlay and sync-error regressions (simulated, no driver), guest heap, thread stack, lazy commit, SIMD rounding, settings, pacing, LED, crash dialog. This repo's tests of the command memory spill and the audio effects. The shader translator's fuzz run and its output through `glslc` and `spirv-val`. The find-game test on synthetic dumps. |
+| `linux` | The Linux build ([linux.md](linux.md)), in the container of `tools/linux/Containerfile` on an Ubuntu runner: the dependencies (SDL3, the LGPL FFmpeg with its decoders checked, shaderc), the runtime, the game-free tests that run on Linux (`tools/ci/run.sh build engine`; the Windows-only ones and the ones that need `glslc` or `spirv-val` are SKIP), and the AppImage, kept as a workflow artifact for seven days. Nothing in it plays the game. |
 | `launcher` | `cargo test --locked` in `launcher/src-tauri`, `node --test` in `launcher`. |
 | `repo` | No game data in the tree (`tools/ci/no_game_data.sh`: Switch game extensions, `romfs/` `exefs/` `generated/`, `lasgame.*`, keys, any file over 1 MiB outside `third_party/`). The upstream sync tool's test. The generator's `--dyn-base` test. The issue bot's and the shader collector's tests on synthetic log text (`tools/test_log_triage.py`, `tools/test_shader_collect.py`, see [issue-triage.md](issue-triage.md)). The self-test of every `tools/verify/*.py` that has a `--self-test` flag, and of `tools/check_game_identity.py` once it has one. |
 
@@ -68,6 +69,23 @@ prepare step that is killed, hides misses. `hold_stats.py` prints the frames hel
 those of 50 ms or more and the area-entry bursts. Each `[vk] frame held` log line says what the wait was for (shaders
 translated, compiled, pipelines built).
 0.3.2 measured on an RTX 3050 Laptop, first stage: holds of 50 ms or more 52 -> 9, the longest 1.4 s -> 0.13 s.
+
+## Shaders prepared before play, from any launcher
+
+`--play` prepares the shaders itself when the stamp (`cache/shaders-prepared.txt`, [launcher-runtime-contract.md](launcher-runtime-contract.md))
+does not match this runtime, game code, shipped list, mods and GPU driver. The rule is `tools/test_shader_stamp.c`
+(`make ci-test`, no game). End to end, on a copy of the work folder, hidden and muted, the way a player's start does it
+(no `LARECOMP_NO_LAUNCHER`, which marks a test run and skips the check):
+
+```sh
+export LARECOMP_NO_AUDIO=1 LARECOMP_HIDDEN=1
+<work>/build/ForgottenLandRecomp.exe --shaders-status           # prepare none
+<work>/build/ForgottenLandRecomp.exe extracted --play           # log: "[shader] not prepared ... (none)", "[shader] preparing: N%", stamp written, then the game boots
+<work>/build/ForgottenLandRecomp.exe --shaders-status           # ready
+<work>/build/ForgottenLandRecomp.exe extracted --play           # no "preparing" lines: boots at once
+sed -i 's/^gpu .*/gpu another driver/' <work>/cache/shaders-prepared.txt   # a driver change, as the stamp sees it
+<work>/build/ForgottenLandRecomp.exe --shaders-status           # prepare gpu
+```
 
 ## What no check proves
 
