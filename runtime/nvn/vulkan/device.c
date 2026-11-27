@@ -1475,7 +1475,8 @@ bool vk_frame_begin(const float clear[4]) {
     if (rq_stopping()) return false;  // quitting: no window image after the window closed (#40)
     int w, h;
     SDL_GetWindowSizeInPixels(window, &w, &h);
-    if (!w || !h) return false;  // minimised
+    // minimised (Windows still reports the window's restored size then, while the surface has none: no window image)
+    if (!w || !h || (SDL_GetWindowFlags(window) & SDL_WINDOW_MINIMIZED)) return false;
     // The last present (the recorder's, record.c) must be done before the swapchain is used again - acquire and present
     // on the same swapchain are not allowed at the same time - and it may have asked for a new swapchain
     WAITING(rec_wait_presents(rec_presents_queued()));
