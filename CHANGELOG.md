@@ -47,6 +47,8 @@ started another way prepares them itself before it starts.
   recycled
 - Frame Generation skipped the in-between image for most frames while a guide clip played, and for some camera
   changes that weren't cuts
+- A minimised game window wrote a line to `game.log` every frame (about 55 a second, 30,000 lines while shaders were
+  prepared) and made the GPU wait for all its work twice a frame. It now draws nothing until the window is back
 
 ### Known issues
 - The device-lost crashes in [#10](https://github.com/scarxity/kirby-forgotten-land-recompiled/issues/10) and
@@ -55,8 +57,10 @@ started another way prepares them itself before it starts.
 - A stage's first frame can still build one to five pipelines as it loads: up to about 0.1 s on Level 2's first stage
   (measured by jumping straight to the stage on an RTX 3050 Laptop)
 - The Linux AppImage has not been played on Linux
-- Frame Generation is still experimental. It was measured on one laptop (RTX 3050, from the program's own timing)
-  and is not yet judged by eye on any other display
+- Frame Generation is still experimental. It was measured and played on one laptop (RTX 3050, 144 Hz): 60 images a
+  second in the first area. It needs the game at a steady 30, so where the game falls below that it turns itself off
+- Busy areas can still drop below 30 when the CPU is the limit, whatever the graphics card: on an i7-11800H laptop the
+  area after the first stage's green forest took 52-88 ms a frame on the render thread (18-23 fps)
 - The shipped list covers 33 stages from their first step and what players sent. The town, the world map, the
   arena's other screens and Level 3's third stage may still pause once for a rare shader variant
 - Intel GPUs are untested on 0.3.x and 0.4.0
